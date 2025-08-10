@@ -29,9 +29,16 @@ class ChartProcessor():
             for name in self.sections
         }
 
+        #self.regexes = {
+        #    name: re.compile(rf'\[{name}\]\s*\{{(.*)\}}', re.DOTALL)
+        #    for name in self.sections
+        #}
+
         self.regex_metadata = r'(Resolution|Offset|Genre)\s*=\s*"?([^"\n]+)"?'
+        #self.regex_metadata = r'(Resolution|Offset|Genre)\s*=\s*"?([^"\n]+?)"?'
 
     def open_chart(self, chart_path):
+
         with open(chart_path, 'r', encoding='utf-8-sig') as f:
             self.chart_text = f.read()
 
@@ -49,11 +56,45 @@ class ChartProcessor():
                 section_content[name] = match.group(1).strip()
         return section_content
     
+    def extract_sections2(self):
+        section_content = {}
+        
+        for section_name in self.sections:
+            # Find the section header
+            header_pattern = rf'\[{re.escape(section_name)}\]\s*\{{'
+            header_match = re.search(header_pattern, self.chart_text)
+            
+            if not header_match:
+                continue
+            
+            # Start after the opening brace
+            start_pos = header_match.end() - 1  # Position of opening brace
+            brace_count = 0
+            pos = start_pos
+            
+            # Count braces to find the matching closing brace
+            while pos < len(self.chart_text):
+                char = self.chart_text[pos]
+                
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    
+                    if brace_count == 0:  # Found matching closing brace
+                        content = self.chart_text[start_pos + 1:pos]
+                        section_content[section_name] = content.strip()
+                        break
+                
+                pos += 1
+        
+        return section_content
+    
     def read_chart(self, chart_path):
         
         self.open_chart(chart_path)
 
-        sections = self.extract_sections()
+        sections = self.extract_sections2()
 
         # === Parse SyncTrack BPMs ===
         if "SyncTrack" in sections:
@@ -88,7 +129,18 @@ class ChartProcessor():
                     lane = int(match.group(3))
                     length = int(match.group(4))
                     self.notes[name].append((tick, note_type, lane, length))
-    
+
+        #print("DEBUG: sections keys:", list(sections.keys()))
+        #print("DEBUG: sections['Song'] exists:", "Song" in sections)
+
+        #if "Song" in sections:
+        #    print("DEBUG: sections['Song'] content:")
+        #    print(repr(sections["Song"]))  # repr() will show hidden chars
+        #    print("DEBUG: sections['Song'] length:", len(sections["Song"]))
+        #    print("DEBUG: First 200 chars:", sections["Song"][:200])
+        #else:
+        #    print("DEBUG: 'Song' section not found in sections!")
+        #    print("DEBUG: Available sections:", list(sections.keys()))
 
 
 if __name__ == "__main__":
