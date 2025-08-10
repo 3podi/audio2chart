@@ -1,6 +1,6 @@
 import bisect
 
-def preprocess_bpm_segments2(bpm_events, resolution):
+def preprocess_bpm_segments(bpm_events, resolution):
     """
     Preprocess BPM events into segments with cumulative time tracking
     
@@ -43,7 +43,7 @@ def preprocess_bpm_segments2(bpm_events, resolution):
     return segments
 
 
-def tick_to_seconds2(tick, bmp_segments, resolution):
+def tick_to_seconds(tick, bmp_segments, resolution):
     """
     Convert a tick position to absolute time in seconds
     
@@ -78,7 +78,7 @@ def tick_to_seconds2(tick, bmp_segments, resolution):
     return base_time + delta_time
 
 
-def convert_notes_to_seconds2(notes, bpm_events, resolution, offset=0.0):
+def convert_notes_to_seconds(notes, bpm_events, resolution, offset=0.0):
     """
     Convert notes from tick-based timing to absolute time in seconds
     
@@ -102,16 +102,16 @@ def convert_notes_to_seconds2(notes, bpm_events, resolution, offset=0.0):
         "Invalid input format for conversion, input only encoded seqs in format tick,note_idx,sustain,attrs."
     )
     
-    bmp_segments = preprocess_bpm_segments2(bpm_events, resolution)
+    bmp_segments = preprocess_bpm_segments(bpm_events, resolution)
     note_times = []
     
     for tick, note_idx, sustain, attr in notes:
         # Convert start tick to absolute time
-        start_sec = tick_to_seconds2(tick, bmp_segments, resolution)
+        start_sec = tick_to_seconds(tick, bmp_segments, resolution)
         
         # Convert sustain duration to time
         if sustain > 0:
-            end_sec = tick_to_seconds2(tick + sustain, bmp_segments, resolution)
+            end_sec = tick_to_seconds(tick + sustain, bmp_segments, resolution)
             duration = end_sec - start_sec
         else:
             duration = 0.0

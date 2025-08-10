@@ -1,5 +1,5 @@
 import itertools
-from chart.time_conversion import convert_notes_to_seconds2
+from chart.time_conversion import convert_notes_to_seconds
 from chart.chart_processor import ChartProcessor
 import timeit
 
