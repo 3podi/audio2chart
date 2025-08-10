@@ -1,4 +1,7 @@
 import itertools
+from chart.time_conversion import convert_notes_to_seconds2
+from chart.chart_processor import ChartProcessor
+import timeit
 
 
 class SimpleTokenizerGuitar():
@@ -14,6 +17,7 @@ class SimpleTokenizerGuitar():
 
         self.mapping_noteseqs2int = {v:idx for idx, v in enumerate(all_combinations)}
         self.mapping_noteseqs2int[(6,)] = len(all_combinations) # Open note: key 31
+        self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
     
     def encode(self, note_list):
         encoded_notes = []
@@ -24,32 +28,33 @@ class SimpleTokenizerGuitar():
         has_is5 = False
         has_is6 = False
 
-        # Extract sustain intervals from 'S' notes
-        sustain_intervals = []
+        # Extract star power intervals from 'S' notes
+        power_intervals = []
         for tick, note_type, lane, duration in note_list:
             if note_type == 'S':
-                sustain_intervals.append((tick, tick + duration))
+                power_intervals.append((tick, tick + duration))
 
-        def is_in_sustain(tick):
-            for start, end in sustain_intervals:
+        def is_in_power(tick):
+            for start, end in power_intervals:
                 if start <= tick < end:
                     return True
             return False
 
         for tick, note_type, lane, duration in note_list:
             if note_type == 'S':
-                continue  # sustains already handled
+                continue  # star powers already handled
 
             # If we changed tick, output previous group first
             if last_tick is not None and tick != last_tick:
-                mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
+                #mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
+                mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
                 if mapped is None:
                     raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
                 attrs = {
                     'is5': has_is5,
                     'is6': has_is6,
-                    'isS': is_in_sustain(last_tick),
+                    'isS': is_in_power(last_tick),
                 }
                 encoded_notes.append((last_tick, mapped, last_duration, attrs))
 
@@ -76,20 +81,101 @@ class SimpleTokenizerGuitar():
 
         # Flush last group
         if last_tick is not None and seq_notes:
-            mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
+            mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
             if mapped is None:
                 raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
             attrs = {
                 'is5': has_is5,
                 'is6': has_is6,
-                'isS': is_in_sustain(last_tick),
+                'isS': is_in_power(last_tick),
             }
             encoded_notes.append((last_tick, mapped, last_duration, attrs))
 
         return encoded_notes
     
+    def decode(self, encoded_notes):
+        note_list = []
+
+        # Step 1: Precompute star power (isS) intervals
+        power_start_ticks = {}  # tick -> duration
+
+        in_power = False
+        sustain_start = None
+
+        for tick, _, _, attrs in encoded_notes:
+            if attrs.get('isS', False):
+                if not in_power:
+                    in_power = True
+                    sustain_start = tick
+            else:
+                if in_power:
+                    power_start_ticks[sustain_start] = tick - sustain_start
+                    in_power = False
+
+        if in_power:
+            last_tick = encoded_notes[-1][0]
+            last_duration = encoded_notes[-1][2]
+            power_start_ticks[sustain_start] = last_tick + last_duration - sustain_start
+
+        # Step 2: Decode notes inline, insert S immediately after first isS
+        for tick, mapped, duration, attrs in encoded_notes:
+            lanes = self.reverse_map[mapped]
+
+            for lane in lanes:
+                note_list.append((tick, 'N', lane, duration))
+
+            #sustain is not assigned to those notes
+            if attrs.get('is5', False):
+                note_list.append((tick, 'N', 5, 0))
+            if attrs.get('is6', False):
+                note_list.append((tick, 'N', 6, 0))
+
+            # Add S only when this tick is the start of a sustain
+            if tick in power_start_ticks:
+                sustain_duration = power_start_ticks[tick]
+                note_list.append((tick, 'S', 2, sustain_duration))  # Use lane 2 or another if desired
+
+        # Already in order, no need to sort
+        return note_list  
+
+    def format_seconds(self, notes, bpm_events, resolution=192, offset=0):
+        return convert_notes_to_seconds2(notes, bpm_events, resolution, offset)
 
 
+ #Per l errore quando nelle vere notes ho uno star power che inizia in un tick semza altre note, 
+ # esso non viene salvato perche non salvo gli inizi degli star power.
+ # quando pero decodo la prima nota in quello star power allora il decoder mettera S,2 con quella nota 
+ # e quindi invertendo l ordine di apparizione delle note.
 
-        
+ #Nelle decoded notes avro sempre lo star power messo dopo la prima nota dello star power
+ #con lo stesso tick start
+
+if __name__ == "__main__":
+    tok = SimpleTokenizerGuitar()
+
+    processor = ChartProcessor(['Expert', 'Medium', 'Easy'], ['Single', 'Drums'])
+
+    t1 = timeit.default_timer()
+    processor.read_chart('notes_full.chart')
+    t2 = timeit.default_timer()
+    print('Time processing 2: ', t2-t1 )
+
+    notes = processor.notes["ExpertSingle"]
+    bpm_events = processor.synctrack
+    resolution = int(processor.song_metadata['Resolution'])
+    offset = float(processor.song_metadata['Offset'])
+    print(resolution, offset)
+
+    tok = SimpleTokenizerGuitar()
+
+    t1 = timeit.default_timer()
+    encoded_notes = tok.encode(notes)
+    t2 = timeit.default_timer()
+    print('Time encoding: ', t2-t1 )
+
+    t1 = timeit.default_timer()
+    note_times = tok.format_seconds(encoded_notes, bpm_events,resolution=480, offset=0.05)
+    t2 = timeit.default_timer()
+
+    print('Coversion time: ', t2-t1)
