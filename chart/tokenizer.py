@@ -16,7 +16,7 @@ class SimpleTokenizerGuitar():
             all_combinations.extend(combos)
 
         self.mapping_noteseqs2int = {v:idx for idx, v in enumerate(all_combinations)}
-        self.mapping_noteseqs2int[(6,)] = len(all_combinations) # Open note: key 31
+        self.mapping_noteseqs2int[(7,)] = len(all_combinations) # Open note: key 31
         self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
     
     def encode(self, note_list):
@@ -46,8 +46,10 @@ class SimpleTokenizerGuitar():
 
             # If we changed tick, output previous group first
             if last_tick is not None and tick != last_tick:
-                #mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
-                mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
+                # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
+                if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: #No perche potrebbe esserci [1,1,3], fix: sort(set()) -> in un tick puo solo esserci un tipo di nota
+                    seq_notes = [seq_notes[0]]
+                mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
                 if mapped is None:
                     raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
@@ -81,7 +83,10 @@ class SimpleTokenizerGuitar():
 
         # Flush last group
         if last_tick is not None and seq_notes:
-            mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
+            # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
+            if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: 
+                seq_notes = [seq_notes[0]]
+            mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
             if mapped is None:
                 raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
@@ -140,7 +145,7 @@ class SimpleTokenizerGuitar():
         return note_list  
 
     def format_seconds(self, notes, bpm_events, resolution=192, offset=0):
-        return convert_notes_to_seconds2(notes, bpm_events, resolution, offset)
+        return convert_notes_to_seconds(notes, bpm_events, resolution, offset)
 
 
  #Per l errore quando nelle vere notes ho uno star power che inizia in un tick semza altre note, 
