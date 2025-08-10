@@ -45,8 +45,6 @@ class ChartProcessor():
         section_content = {}
         for name, pattern in self.regexes.items():
             match = pattern.search(self.chart_text)
-            print("Tryng to match: ", name)
-            print("Matched: ", match)
             if match:
                 section_content[name] = match.group(1).strip()
         return section_content
@@ -92,25 +90,13 @@ class ChartProcessor():
                     self.notes[name].append((tick, note_type, lane, length))
     
 
-processor = ChartProcessor(['Expert', 'Medium', 'Easy'], ['Single', 'Drums'])
 
-t1 = timeit.default_timer()
-processor.read_chart('notes_full.chart')
-t2 = timeit.default_timer()
+if __name__ == "__main__":
+    
+    processor = ChartProcessor(['Expert', 'Medium', 'Easy'], ['Single', 'Drums'])
 
-print('Time processing 2: ', t2-t1 )
+    t1 = timeit.default_timer()
+    processor.read_chart('notes_full.chart')
+    t2 = timeit.default_timer()
 
-
-for k, v in processor.notes.items():
-    print(k)
-    print(len(v))
-
-print(processor.synctrack)
-print(processor.song_metadata)
-        
-for meta in processor.song_metadata:
-    if 'Resolution' in meta:
-        print(meta.split('=')[-1].strip())
-    if 'Offset' in meta:
-        print(meta.split('=')[-1].strip())
-print(processor.notes["MediumSingle"][:10])
+    print('Time processing chart: ', t2-t1)
