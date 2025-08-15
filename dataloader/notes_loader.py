@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
 from chart.tokenizer import SimpleTokenizerGuitar
 
+from utils_dataloader import find_chart_files
+
 DIFFICULTIES = ['Expert', 'Hard', 'Medium', 'Easy']
 INSTRUMENTS = ['Single']
 DIFF_MAPPING = {
@@ -78,14 +80,12 @@ def create_chart_dataloader(chart_root: List[str],
         vocab: Custom vocabulary dict, if None will create default
     """
     
-    if vocab is None:
-        vocab = SimpleTokenizerGuitar().mapping_noteseqs2int
-
     # Get chart paths from root folder
+    chart_paths = find_chart_files(chart_root)
     
     # Create collate function with proper parameters
     def collate_fn(batch):
-        return chart_collate_fn(batch, vocab=vocab, max_length=max_length, pad_token=vocab['<PAD>'])
+        return chart_collate_fn(batch, max_length=max_length, pad_token=-100)
     
 
     dataset = ChartChunksDataset(chart_paths, difficulties, instruments, max_length)
@@ -100,10 +100,10 @@ def create_chart_dataloader(chart_root: List[str],
         collate_fn=collate_fn
     )
     
-    return dataloader, vocab  # Return vocab for later use
+    return dataloader
 
 
-def chart_collate_fn(batch, vocab=None, max_length=512, pad_token=-100):
+def chart_collate_fn(batch, max_length=512, pad_token=-100):
     """Custom collate function with proper batching and padding.
        Input batch should be already tokenized.
     """
