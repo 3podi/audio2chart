@@ -37,10 +37,13 @@ class ChartProcessor():
         self.regex_metadata = r'(Resolution|Offset|Genre)\s*=\s*"?([^"\n]+)"?'
         #self.regex_metadata = r'(Resolution|Offset|Genre)\s*=\s*"?([^"\n]+?)"?'
 
-    def open_chart(self, chart_path):
+    def open_chart(self, chart_path, chart_text=None):
 
-        with open(chart_path, 'r', encoding='utf-8-sig') as f:
-            self.chart_text = f.read()
+        if chart_text:
+            self.chart_text = chart_text
+        else:
+            with open(chart_path, 'r', encoding='utf-8-sig') as f:
+                self.chart_text = f.read()
 
         self.synctrack = []             #Store SyncTrack events: (tick,BPM)
         self.notes = {}                 #Store note events for section: {"section": List[(tick,N,lane,length)]}
@@ -90,9 +93,9 @@ class ChartProcessor():
         
         return section_content
     
-    def read_chart(self, chart_path):
+    def read_chart(self, chart_path, chart_text=None):
         
-        self.open_chart(chart_path)
+        self.open_chart(chart_path, chart_text=chart_text)
 
         sections = self.extract_sections2()
 
