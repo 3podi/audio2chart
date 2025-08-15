@@ -22,7 +22,7 @@ DIFF_MAPPING = {
 
 class ChartChunksDataset(Dataset):
     def __init__(self, chart_paths, difficulties, instruments, seq_len):
-        self.seq_len = seq_len
+        self.seq_len = seq_len - 2 #Add bos and eso in collate 
         self.chunks = []
         self.chunks_diff = []
         
@@ -60,7 +60,7 @@ class ChartChunksDataset(Dataset):
         return self.chunks[idx], self.chunks_diff[idx]
     
 
-def create_chart_dataloader(chart_root: List[str], 
+def create_chart_dataloader(chart_paths: List[str], 
                           difficulties: List[str] = ['Expert'], 
                           instruments: List[str] = ['Single'],
                           batch_size: int = 32,
@@ -71,7 +71,7 @@ def create_chart_dataloader(chart_root: List[str],
     Create a DataLoader for chart files with proper batching and tokenization
     
     Args:
-        chart_root: Root to find.chart file paths
+        chart_paths: List of str with file paths
         difficulties: Difficulties to include
         instruments: Instruments to include  
         batch_size: Batch size
@@ -80,12 +80,24 @@ def create_chart_dataloader(chart_root: List[str],
         vocab: Custom vocabulary dict, if None will create default
     """
     
-    # Get chart paths from root folder
-    chart_paths = find_chart_files(chart_root)
-    
+    if vocab is None:
+        vocab = SimpleTokenizerGuitar().mapping_noteseqs2int
+        bos_token_id = len(vocab.keys())
+        eos_token_id = bos_token_id + 1 
+        pad_token_id = eos_token_id + 1
+        vocab['<bos>'] = bos_token_id
+        vocab['<eos>'] = eos_token_id 
+        vocab['<PAD>'] = pad_token_id
+
     # Create collate function with proper parameters
     def collate_fn(batch):
-        return chart_collate_fn(batch, max_length=max_length, pad_token=-100)
+        return chart_collate_fn(
+            batch,
+            max_length=max_length,
+            bos_token=vocab['<bos>'], 
+            eos_token=vocab['<eos>'], 
+            pad_token=vocab['<PAD>']
+        )
     
 
     dataset = ChartChunksDataset(chart_paths, difficulties, instruments, max_length)
@@ -100,10 +112,10 @@ def create_chart_dataloader(chart_root: List[str],
         collate_fn=collate_fn
     )
     
-    return dataloader
+    return dataloader, vocab
 
 
-def chart_collate_fn(batch, max_length=512, pad_token=-100):
+def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512):
     """Custom collate function with proper batching and padding.
        Input batch should be already tokenized.
     """
@@ -114,15 +126,20 @@ def chart_collate_fn(batch, max_length=512, pad_token=-100):
     padded_batch = []
     attention_masks = []
     diff_batch = []
-
+        
     for sample, diff in batch:
-        
-        # Create attention mask (1 for real tokens, 0 for padding)
-        attention_mask = [1] * len(sample) + [0] * (max_length - len(sample))
-        
-        # Pad sequence to max_length
-        padded_tokens = sample + [pad_token] * (max_length - len(sample))
-        
+
+        sample = [bos_token] + sample + [eos_token]
+
+        # Handle padding and attention mask
+        if len(sample) > max_length:
+            sample = sample[:max_length]
+            attention_mask = [1] * max_length
+            padded_tokens = sample
+        else:
+            attention_mask = [1] * len(sample) + [0] * (max_length - len(sample))
+            padded_tokens = sample + [pad_token] * (max_length - len(sample))
+
         padded_batch.append(padded_tokens)
         attention_masks.append(attention_mask)
         diff_batch.append(diff)
