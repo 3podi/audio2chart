@@ -9,14 +9,21 @@ class SimpleTokenizerGuitar():
 
         # Define a mapping between pressed lanes and note index
 
-        indices = [i for i in range(5)] # 5 fret
+        indices = [i for i in range(5)] + [7] # 5 fret + open
         all_combinations = []
         for r in range(1, len(indices) + 1):
             combos = list(itertools.combinations(indices, r))
             all_combinations.extend(combos)
 
         self.mapping_noteseqs2int = {v:idx for idx, v in enumerate(all_combinations)}
-        self.mapping_noteseqs2int[(7,)] = len(all_combinations) # Open note: key 31
+        #self.mapping_noteseqs2int[(7,)] = len(all_combinations) # Open note: key 31
+        self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
+        #print(self.mapping_noteseqs2int)
+    
+    def remove_keys(self, useless_keys):
+
+        for key in useless_keys:
+            self.mapping_noteseqs2int.pop(key)
         self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
     
     def encode(self, note_list):
@@ -47,9 +54,9 @@ class SimpleTokenizerGuitar():
             # If we changed tick, output previous group first
             if last_tick is not None and tick != last_tick:
                 # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
-                if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: #No perche potrebbe esserci [1,1,3], fix: sort(set()) -> in un tick puo solo esserci un tipo di nota
-                    seq_notes = [seq_notes[0]]
-                mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
+                #if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: #No perche potrebbe esserci [1,1,3], fix: sort(set()) -> in un tick puo solo esserci un tipo di nota
+                #    seq_notes = [seq_notes[0]]
+                mapped = self.mapping_noteseqs2int.get(tuple(sorted(set(seq_notes))), None)
                 if mapped is None:
                     raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
