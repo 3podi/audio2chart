@@ -1,0 +1,9 @@
+name: NOTES
+
+#Transformer config
+d_model: 8
+n_heads: 2
+n_layers: 2
+d_ff: 16
+max_seq_len: 128
+dropout: 0.0

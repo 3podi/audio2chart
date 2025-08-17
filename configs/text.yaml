@@ -1,0 +1,7 @@
+defaults:
+  - default.yaml
+  - model: notes_transformer
+  - _self_
+
+
+tags: [text, notes, baseline]
