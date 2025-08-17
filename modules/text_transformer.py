@@ -1,8 +1,13 @@
 import torch
+from torch import optim
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import lightning as L
+from torchmetrics import Accuracy
+import inspect
 
+from scheduler import LinearWarmupCosineAnnealingLR
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads, dropout=0.1):
@@ -173,6 +178,30 @@ class TransformerDecoderOnly(nn.Module):
         logits = self.output_projection(x)
         
         return logits
+
+    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == 'cuda'
+        extra_args = dict(fused=True) if use_fused else dict()
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+        print(f"using fused AdamW: {use_fused}")
+
+        return optimizer
     
     def generate(self, input_ids, max_length=100, temperature=1.0, top_k=50, attention_mask=None):
         """Simple greedy generation with temperature and top-k sampling"""
@@ -217,6 +246,110 @@ class TransformerDecoderOnly(nn.Module):
                     break
                     
         return generated
+    
+
+class NotesTransformer(L.LightningModule):
+    def __init__(self, cfg):
+        super().__init__()
+        
+        self.transformer = TransformerDecoderOnly(cfg)
+        self.vocab_size = cfg 
+        
+        # Metrics
+        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+        
+        # For perplexity calculation
+        self.save_hyperparameters()
+
+    def training_step(self, batch, batch_idx):
+        x, _ = batch
+        
+        # Input: x[:,:-1], Target: x[:,1:]
+        input_tokens = x[:, :-1] 
+        target_tokens = x[:, 1:] 
+        
+        logits = self.transformer(input_tokens)  # Shape: (batch_size, seq_len-1, vocab_size)
+        
+        logits_flat = logits.view(-1, self.vocab_size)  # (batch_size * seq_len, vocab_size)
+        targets_flat = target_tokens.view(-1)  # (batch_size * seq_len)
+        
+        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=vocab_size-1)  # padding token is last vocab idx
+        
+        # Calculate accuracy
+        preds = torch.argmax(logits_flat, dim=-1)
+        acc = self.train_accuracy(preds, targets_flat)
+        
+        # Calculate perplexity
+        perplexity = torch.exp(loss)
+        
+        # Log metrics
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_acc", acc, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_perplexity", perplexity, on_step=True, on_epoch=True)
+        
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, _ = batch
+        
+        input_tokens = x[:, :-1]
+        target_tokens = x[:, 1:]
+        
+        logits = self.transformer(input_tokens)
+        
+        logits_flat = logits.view(-1, self.vocab_size)
+        targets_flat = target_tokens.view(-1)
+        
+        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+        
+        # Calculate accuracy
+        preds = torch.argmax(logits_flat, dim=-1)
+        acc = self.val_accuracy(preds, targets_flat)
+        
+        # Calculate perplexity
+        perplexity = torch.exp(loss)
+        
+        # Log validation metrics
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+        self.log("val_acc", acc, on_epoch=True, prog_bar=True)
+        self.log("val_perplexity", perplexity, on_epoch=True, prog_bar=True)
+        
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        # Similar to validation_step
+        return self.validation_step(batch, batch_idx)
+
+    def configure_optimizers(self):
+        optimizer = self.transformer.configure_optimizers(
+            weight_decay = self.cfg.optimizer.weight_decay,
+            learning_rate = self.cfg.optimizer.lr
+        )
+
+        ### Define number of steps based on dataloader
+        
+        scheduler = LinearWarmupCosineAnnealingLR(
+            optimizer = optimizer,
+            warmup_steps = self.cfg.optimizer.warmup_steps,
+            max_steps = self.cfg.optimizer.max_steps
+        )
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1
+            },
+        }
+
+    def on_train_epoch_end(self):
+        # Reset metrics at the end of each epoch
+        self.train_accuracy.reset()
+
+    def on_validation_epoch_end(self):
+        self.val_accuracy.reset()
 
 
 # Example usage and testing
