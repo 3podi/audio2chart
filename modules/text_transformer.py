@@ -174,9 +174,6 @@ class TransformerDecoderOnly(nn.Module):
             logits: (batch_size, seq_len, vocab_size) - Output logits
         """
 
-        print('Input seq shape: ', input_ids.shape)
-        print('Input attention mask shape: ', attention_mask.shape)
-
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
