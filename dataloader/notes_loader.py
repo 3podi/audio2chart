@@ -66,6 +66,7 @@ def create_chart_dataloader(chart_paths: List[str],
                           batch_size: int = 32,
                           max_length: int = 512,
                           num_workers: int = 4,
+                          shuffle: bool = True,
                           vocab: Optional[Dict] = None):
     """
     Create a DataLoader for chart files with proper batching and tokenization
@@ -98,7 +99,6 @@ def create_chart_dataloader(chart_paths: List[str],
     
 
     dataset = ChartChunksDataset(chart_paths, difficulties, instruments, max_length)
-    shuffle = True
     
     dataloader = DataLoader(
         dataset,

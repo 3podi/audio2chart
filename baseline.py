@@ -64,7 +64,8 @@ def main(config: DictConfig):
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
         batch_size=config.batch_size,
-        max_length=config.max_length
+        max_length=config.max_length,
+        shuffle=False
     )
 
     # Model
