@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
 from chart.tokenizer import SimpleTokenizerGuitar
 
-from utils_dataloader import find_chart_files
+from dataloader.utils_dataloader import find_chart_files
 
 DIFFICULTIES = ['Expert', 'Hard', 'Medium', 'Easy']
 INSTRUMENTS = ['Single']
@@ -22,10 +22,10 @@ DIFF_MAPPING = {
 
 class ChartChunksDataset(Dataset):
     def __init__(self, chart_paths, difficulties, instruments, seq_len):
-        self.seq_len = seq_len - 2 #Add bos and eso in collate 
+        self.seq_len = seq_len - 2 #Add bos and eos in collate 
         self.chunks = []
         self.chunks_diff = []
-        
+
         proc = ChartProcessor(difficulties, instruments)
         self.tokenizer = SimpleTokenizerGuitar()
 
@@ -41,7 +41,7 @@ class ChartChunksDataset(Dataset):
 
     def prepare_chunks(self, notes):
         for section_name, note_seq in notes.items():
-            encoded_notes = self.tokenizer(note_list=note_seq)
+            encoded_notes = self.tokenizer.encode(note_list=note_seq)
             encoded_list = [n[1] for n in encoded_notes]
             chunks = [
                 encoded_list[i:i+self.seq_len]
@@ -89,15 +89,12 @@ def create_chart_dataloader(chart_paths: List[str],
         vocab['<eos>'] = eos_token_id 
         vocab['<PAD>'] = pad_token_id
 
-    # Create collate function with proper parameters
-    def collate_fn(batch):
-        return chart_collate_fn(
-            batch,
-            max_length=max_length,
-            bos_token=vocab['<bos>'], 
-            eos_token=vocab['<eos>'], 
-            pad_token=vocab['<PAD>']
-        )
+    collator = ChartCollator(
+        bos_token=vocab['<bos>'], 
+        eos_token=vocab['<eos>'], 
+        pad_token=vocab['<PAD>'],
+        max_length=max_length
+    )
     
 
     dataset = ChartChunksDataset(chart_paths, difficulties, instruments, max_length)
@@ -109,10 +106,26 @@ def create_chart_dataloader(chart_paths: List[str],
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collator
     )
     
     return dataloader, vocab
+
+class ChartCollator:
+    def __init__(self, bos_token, eos_token, pad_token=-100, max_length=512):
+        self.bos_token = bos_token
+        self.eos_token = eos_token
+        self.pad_token = pad_token
+        self.max_length = max_length
+    
+    def __call__(self, batch):
+        return chart_collate_fn(
+            batch,
+            bos_token=self.bos_token,
+            eos_token=self.eos_token,
+            pad_token=self.pad_token,
+            max_length=self.max_length
+        )
 
 
 def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512):
@@ -132,12 +145,15 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         sample = [bos_token] + sample + [eos_token]
 
         # Handle padding and attention mask
-        if len(sample) > max_length:
+        #print('Len sample: ', len(sample))
+        #print('Using max length: ', max_length)
+        if len(sample) >= max_length:
             sample = sample[:max_length]
-            attention_mask = [1] * max_length
+            attention_mask = [1] * (max_length-1)
             padded_tokens = sample
         else:
-            attention_mask = [1] * len(sample) + [0] * (max_length - len(sample))
+            #print('computations: ', max_length -1 - len(sample))
+            attention_mask = [1] * len(sample) + [0] * (max_length -1 - len(sample))
             padded_tokens = sample + [pad_token] * (max_length - len(sample))
 
         padded_batch.append(padded_tokens)
