@@ -1,4 +1,3 @@
-from typing import List
 import re
 import timeit
 
@@ -8,7 +7,7 @@ INSTRUMENTS = ['Single', 'Drums']
 class ChartProcessor():
     def __init__(self, difficulties, instruments):
         
-        if not isinstance(difficulties, List):
+        if not isinstance(difficulties, list):
             difficulties = [difficulties]
 
         assert (all(element in DIFFICULTIES for element in difficulties))
