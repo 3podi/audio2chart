@@ -7,7 +7,7 @@ import lightning as L
 from torchmetrics import Accuracy
 import inspect
 
-from scheduler import LinearWarmupCosineAnnealingLR
+from modules.scheduler import LinearWarmupCosineAnnealingLR
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads, dropout=0.1):
@@ -91,22 +91,33 @@ class DecoderBlock(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
+    """Positional encoding implementation"""
+    
     def __init__(self, d_model, max_seq_len=5000):
         super().__init__()
         
+        # Create positional encoding matrix
         pe = torch.zeros(max_seq_len, d_model)
         position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        
+        # Create the div_term for sinusoidal encoding
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
                            (-math.log(10000.0) / d_model))
         
+        # Apply sin to even indices and cos to odd indices
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        
+        # Add batch dimension: (1, max_seq_len, d_model)
+        pe = pe.unsqueeze(0)
         
         self.register_buffer('pe', pe)
         
     def forward(self, x):
-        return x + self.pe[:x.size(0), :].transpose(0, 1)
+        # x.size(1) is seq_len
+        # self.pe[:, :seq_len, :] gives us (1, seq_len, d_model)
+        # Broadcasting handles the batch dimension
+        return x + self.pe[:, :x.size(1), :]
 
 
 class TransformerDecoderOnly(nn.Module):
@@ -162,6 +173,10 @@ class TransformerDecoderOnly(nn.Module):
         Returns:
             logits: (batch_size, seq_len, vocab_size) - Output logits
         """
+
+        print('Input seq shape: ', input_ids.shape)
+        print('Input attention mask shape: ', attention_mask.shape)
+
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
@@ -169,6 +184,8 @@ class TransformerDecoderOnly(nn.Module):
         # Token embeddings and positional encoding
         x = self.token_embedding(input_ids)
         x = self.positional_encoding(x)
+
+        print('Tokens embeddings shape: ', x.shape)
         
         # Pass through decoder layers
         for layer in self.layers:
@@ -249,38 +266,79 @@ class TransformerDecoderOnly(nn.Module):
     
 
 class NotesTransformer(L.LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, pad_token_id, eos_token_id, vocab_size, cfg_model, cfg_optimizer=None):
         super().__init__()
         
-        self.transformer = TransformerDecoderOnly(cfg)
-        self.vocab_size = cfg 
+        self.vocab_size = vocab_size
+        self.transformer = TransformerDecoderOnly(
+            vocab_size = self.vocab_size,
+            pad_token_id = pad_token_id,
+            eos_token_id = eos_token_id,
+            d_model = cfg_model.d_model,
+            n_heads = cfg_model.n_heads,
+            n_layers = cfg_model.n_layers,
+            d_ff = cfg_model.d_ff,
+            max_seq_len = cfg_model.max_seq_len,
+            dropout = cfg_model.dropout
+        )
+
+        self.cfg_optimizer = cfg_optimizer
         
         # Metrics
-        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
-        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
+        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
         
         # For perplexity calculation
         self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
-        x, _ = batch
         
-        # Input: x[:,:-1], Target: x[:,1:]
-        input_tokens = x[:, :-1] 
-        target_tokens = x[:, 1:] 
+        x = batch['input_ids']
+        mask = batch['attention_mask']
         
-        logits = self.transformer(input_tokens)  # Shape: (batch_size, seq_len-1, vocab_size)
+        input_tokens = x[:, :-1].contiguous()
+        target_tokens = x[:, 1:].contiguous()
         
-        logits_flat = logits.view(-1, self.vocab_size)  # (batch_size * seq_len, vocab_size)
-        targets_flat = target_tokens.view(-1)  # (batch_size * seq_len)
+        # Forward pass
+        logits = self.transformer(input_tokens, attention_mask=mask)
         
-        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=vocab_size-1)  # padding token is last vocab idx
+        logits_flat = logits.reshape(-1, self.vocab_size)
+        targets_flat = target_tokens.reshape(-1)
         
-        # Calculate accuracy
+        # Compute loss
+        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+        
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
+        perplexity = torch.exp(loss)
         
-        # Calculate perplexity
+        # Log metrics
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_acc", acc, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_perplexity", perplexity, on_step=True, on_epoch=True)
+    
+        return loss
+        
+
+    def validation_step(self, batch, batch_idx):
+        
+        x = batch['input_ids']
+        mask = batch['attention_mask']
+        
+        input_tokens = x[:, :-1].contiguous()
+        target_tokens = x[:, 1:].contiguous()
+        
+        # Forward pass
+        logits = self.transformer(input_tokens, attention_mask=mask)
+        
+        logits_flat = logits.reshape(-1, self.vocab_size)
+        targets_flat = target_tokens.reshape(-1)
+        
+        # Compute loss
+        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+        
+        preds = torch.argmax(logits_flat, dim=-1)
+        acc = self.train_accuracy(preds, targets_flat)
         perplexity = torch.exp(loss)
         
         # Log metrics
@@ -290,49 +348,24 @@ class NotesTransformer(L.LightningModule):
         
         return loss
 
-    def validation_step(self, batch, batch_idx):
-        x, _ = batch
-        
-        input_tokens = x[:, :-1]
-        target_tokens = x[:, 1:]
-        
-        logits = self.transformer(input_tokens)
-        
-        logits_flat = logits.view(-1, self.vocab_size)
-        targets_flat = target_tokens.view(-1)
-        
-        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
-        
-        # Calculate accuracy
-        preds = torch.argmax(logits_flat, dim=-1)
-        acc = self.val_accuracy(preds, targets_flat)
-        
-        # Calculate perplexity
-        perplexity = torch.exp(loss)
-        
-        # Log validation metrics
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
-        self.log("val_acc", acc, on_epoch=True, prog_bar=True)
-        self.log("val_perplexity", perplexity, on_epoch=True, prog_bar=True)
-        
-        return loss
-
     def test_step(self, batch, batch_idx):
         # Similar to validation_step
         return self.validation_step(batch, batch_idx)
 
     def configure_optimizers(self):
         optimizer = self.transformer.configure_optimizers(
-            weight_decay = self.cfg.optimizer.weight_decay,
-            learning_rate = self.cfg.optimizer.lr
+            weight_decay = self.cfg_optimizer.weight_decay,
+            learning_rate = self.cfg_optimizer.lr,
+            betas = (0.9, 0.95),
+            device_type=self.device
         )
 
         ### Define number of steps based on dataloader
         
         scheduler = LinearWarmupCosineAnnealingLR(
             optimizer = optimizer,
-            warmup_steps = self.cfg.optimizer.warmup_steps,
-            max_steps = self.cfg.optimizer.max_steps
+            warmup_steps = self.cfg_optimizer.warmup_steps,
+            max_steps = self.cfg_optimizer.max_steps
         )
         
         return {
