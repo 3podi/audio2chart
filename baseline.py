@@ -9,6 +9,8 @@ from modules.text_transformer import NotesTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import LearningRateMonitor
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
 
 
@@ -38,7 +40,8 @@ def main(config: DictConfig):
         project="audio2chart",
         config=wandb_config,
         name=run_name,
-        tags=config.tags
+        tags=config.tags,
+        reinit=True
     )
 
     wandb_logger = WandbLogger(log_model="all")
@@ -56,7 +59,8 @@ def main(config: DictConfig):
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
         batch_size=config.batch_size,
-        max_length=config.max_length
+        max_length=config.max_length,
+        conditional=config.model.conditional,
     )
 
     val_dataloader, _ = create_chart_dataloader(
@@ -65,6 +69,7 @@ def main(config: DictConfig):
         instruments=list(config.inst_list),
         batch_size=config.batch_size,
         max_length=config.max_length,
+        conditional=config.model.conditional,
         shuffle=False
     )
 
@@ -85,13 +90,16 @@ def main(config: DictConfig):
     #    filename="best-checkpoint"
     #)
 
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.001, patience=10, verbose=False, mode="max")
+
     # Trainer
     trainer = L.Trainer(
         max_epochs= config.max_epochs,
         accelerator= "gpu" if config.gpus > 0 else "cpu",
         devices= config.gpus if config.gpus > 0 else 1,
         enable_checkpointing=False,
-        #callbacks= [checkpoint_cb],
+        callbacks= [lr_monitor, early_stop_callback],
         log_every_n_steps= 10,
         logger= wandb_logger,
         #default_root_dir=checkpoint_path,
@@ -107,6 +115,7 @@ def main(config: DictConfig):
         val_dataloaders = val_dataloader
     )
 
+    wandb.finish() 
 
 if __name__ == "__main__":
     main()

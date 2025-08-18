@@ -122,7 +122,7 @@ class PositionalEncoding(nn.Module):
 
 class TransformerDecoderOnly(nn.Module):
     def __init__(self, vocab_size, pad_token_id, eos_token_id, d_model=512, n_heads=8, n_layers=6, 
-                 d_ff=2048, max_seq_len=5000, dropout=0.1, weigth_tying=False):
+                 d_ff=2048, max_seq_len=5000, dropout=0.1, conditional=False, weigth_tying=False):
         super().__init__()
         
         self.d_model = d_model
@@ -132,6 +132,9 @@ class TransformerDecoderOnly(nn.Module):
         # Token embedding and positional encoding
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, max_seq_len)
+        self.conditional = conditional
+        if self.conditional:
+            self.cond_embedding = nn.Embedding(4, d_model)
         
         # Decoder layers
         self.layers = nn.ModuleList([
@@ -164,7 +167,7 @@ class TransformerDecoderOnly(nn.Module):
         """Create attention mask where 1 means attend, 0 means don't attend (pad token)"""
         return (input_ids != self.pad_token_id).long()
     
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids, attention_mask=None, class_ids=None):
         """
         Args:
             input_ids: (batch_size, seq_len) - Token indices
@@ -174,6 +177,7 @@ class TransformerDecoderOnly(nn.Module):
             logits: (batch_size, seq_len, vocab_size) - Output logits
         """
 
+
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
@@ -182,7 +186,10 @@ class TransformerDecoderOnly(nn.Module):
         x = self.token_embedding(input_ids)
         x = self.positional_encoding(x)
 
-        print('Tokens embeddings shape: ', x.shape)
+        if self.conditional:
+            assert class_ids is not None, "class_idx must be provided for conditional transformer"
+            # Embed the class index and add to the input
+            x = x + self.cond_embedding(class_ids).unsqueeze(1)
         
         # Pass through decoder layers
         for layer in self.layers:
@@ -276,7 +283,8 @@ class NotesTransformer(L.LightningModule):
             n_layers = cfg_model.n_layers,
             d_ff = cfg_model.d_ff,
             max_seq_len = cfg_model.max_seq_len,
-            dropout = cfg_model.dropout
+            dropout = cfg_model.dropout,
+            conditional= cfg_model.conditional,
         )
 
         self.cfg_optimizer = cfg_optimizer
@@ -290,14 +298,15 @@ class NotesTransformer(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         
-        x = batch['input_ids']
-        mask = batch['attention_mask']
+        x = batch.get('input_ids', None)
+        mask = batch.get('attention_mask', None)
+        class_ids = batch.get('cond_diff', None)
         
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
         
         # Forward pass
-        logits = self.transformer(input_tokens, attention_mask=mask)
+        logits = self.transformer(input_tokens, attention_mask=mask, class_ids=class_ids)
         
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
@@ -310,23 +319,66 @@ class NotesTransformer(L.LightningModule):
         perplexity = torch.exp(loss)
         
         # Log metrics
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train_acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train_perplexity", perplexity, on_step=True, on_epoch=True)
+        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
+
+        # Compute per-class metrics
+        if class_ids is not None and batch_idx % 100 == 0:
+            with torch.no_grad():
+                # Expand class_ids to match flattened logits dimensions
+                # class_ids: [batch_size] -> [batch_size * seq_len]
+                seq_len = target_tokens.shape[1]
+                class_ids_expanded = class_ids.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+                
+                # First filter out ignored tokens globally
+                valid_mask = targets_flat != (self.vocab_size - 1)
+                
+                if valid_mask.sum() > 0:  # Only proceed if there are valid tokens
+                    valid_logits = logits_flat[valid_mask]
+                    valid_targets = targets_flat[valid_mask]
+                    valid_preds = preds[valid_mask]
+                    valid_class_ids = class_ids_expanded[valid_mask]
+                    
+                    # Get unique classes among valid tokens
+                    unique_classes = torch.unique(valid_class_ids)
+                    
+                    for class_id in unique_classes:
+                        # Create mask for current class among valid tokens
+                        class_mask = (valid_class_ids == class_id)
+                        
+                        if class_mask.sum() > 0:  # Only compute if class has valid tokens
+                            # Filter predictions and targets for this class
+                            class_logits = valid_logits[class_mask]
+                            class_targets = valid_targets[class_mask]
+                            class_preds = valid_preds[class_mask]
+                            
+                            # Compute class-specific metrics
+                            class_loss = F.cross_entropy(class_logits, class_targets)
+                            class_acc = (class_preds == class_targets).float().mean()
+                            class_perplexity = torch.exp(class_loss)
+                            
+                            # Log class-specific metrics
+                            class_name = f"class_{int(class_id.item())}"
+                            self.log(f"train/loss_{class_name}", class_loss, on_step=True, on_epoch=True)
+                            self.log(f"train/acc_{class_name}", class_acc, on_step=True, on_epoch=True)
+                            self.log(f"train/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
+        
     
         return loss
         
 
     def validation_step(self, batch, batch_idx):
         
-        x = batch['input_ids']
-        mask = batch['attention_mask']
+        x = batch.get('input_ids', None)
+        mask = batch.get('attention_mask', None)
+        class_ids = batch.get('cond_diff', None)
         
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
         
         # Forward pass
-        logits = self.transformer(input_tokens, attention_mask=mask)
+        logits = self.transformer(input_tokens, attention_mask=mask, class_ids=class_ids)
         
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
@@ -339,9 +391,49 @@ class NotesTransformer(L.LightningModule):
         perplexity = torch.exp(loss)
         
         # Log metrics
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train_acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train_perplexity", perplexity, on_step=True, on_epoch=True)
+        self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("val/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("val/perplexity", perplexity, on_step=True, on_epoch=True)
+
+        # Compute per-class metrics
+        if class_ids is not None and batch_idx % 100 == 0:
+            # Expand class_ids to match flattened logits dimensions
+            # class_ids: [batch_size] -> [batch_size * seq_len]
+            seq_len = target_tokens.shape[1]
+            class_ids_expanded = class_ids.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+            
+            # First filter out ignored tokens globally
+            valid_mask = targets_flat != (self.vocab_size - 1)
+            
+            if valid_mask.sum() > 0:  # Only proceed if there are valid tokens
+                valid_logits = logits_flat[valid_mask]
+                valid_targets = targets_flat[valid_mask]
+                valid_preds = preds[valid_mask]
+                valid_class_ids = class_ids_expanded[valid_mask]
+                
+                # Get unique classes among valid tokens
+                unique_classes = torch.unique(valid_class_ids)
+                
+                for class_id in unique_classes:
+                    # Create mask for current class among valid tokens
+                    class_mask = (valid_class_ids == class_id)
+                    
+                    if class_mask.sum() > 0:  # Only compute if class has valid tokens
+                        # Filter predictions and targets for this class
+                        class_logits = valid_logits[class_mask]
+                        class_targets = valid_targets[class_mask]
+                        class_preds = valid_preds[class_mask]
+                        
+                        # Compute class-specific metrics
+                        class_loss = F.cross_entropy(class_logits, class_targets)
+                        class_acc = (class_preds == class_targets).float().mean()
+                        class_perplexity = torch.exp(class_loss)
+                        
+                        # Log class-specific metrics
+                        class_name = f"class_{int(class_id.item())}"
+                        self.log(f"val/loss_{class_name}", class_loss, on_step=True, on_epoch=True)
+                        self.log(f"val/acc_{class_name}", class_acc, on_step=True, on_epoch=True)
+                        self.log(f"val/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
         
         return loss
 
