@@ -13,6 +13,18 @@ from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
 
+class LogGradientNorm(L.pytorch.callbacks.Callback):
+    """
+    Logs the gradient norm (L2 norm) before the optimizer step (pre-clipping/scaling).
+    """
+    def on_before_optimizer_step(self, trainer: L.Trainer, *args, **kwargs) -> None:
+        total_norm = 0.0
+        for param in trainer.lightning_module.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.detach().norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        trainer.lightning_module.log("train/grad_norm", total_norm)
 
 @hydra.main(version_base=None, config_path="configs",config_name="text")
 def main(config: DictConfig):
@@ -92,6 +104,7 @@ def main(config: DictConfig):
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
     early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.001, patience=10, verbose=False, mode="max")
+    track_grad_norm = LogGradientNorm()
 
     # Trainer
     trainer = L.Trainer(
@@ -99,7 +112,7 @@ def main(config: DictConfig):
         accelerator= "gpu" if config.gpus > 0 else "cpu",
         devices= config.gpus if config.gpus > 0 else 1,
         enable_checkpointing=False,
-        callbacks= [lr_monitor, early_stop_callback],
+        callbacks= [lr_monitor, early_stop_callback, track_grad_norm],
         log_every_n_steps= 10,
         logger= wandb_logger,
         #default_root_dir=checkpoint_path,
