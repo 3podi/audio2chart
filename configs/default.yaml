@@ -1,6 +1,6 @@
 #Data Config
 root_folder: extracted_songs/
-batch_size: 512
+batch_size: 128
 validation_split: 0.8
 diff_list: 
   - Expert
@@ -14,7 +14,7 @@ max_length: 256
 
 #Optimizer Config
 optimizer:
-  lr: 1e-4
+  lr: 5e-5
   weight_decay: 0.01
   warmup_steps: 384
   max_steps: 6800
@@ -22,7 +22,7 @@ optimizer:
 
 #Trainer
 max_epochs: 10
-gpus: 0
+gpus: 1
 
 
 #Wandb
