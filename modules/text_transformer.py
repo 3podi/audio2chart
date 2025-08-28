@@ -83,7 +83,7 @@ class DecoderBlock(nn.Module):
         
     def forward(self, x, attention_mask=None):
         # Self-attention with layer norm and residual connection
-        x = self.self_attn(self.norm1(x), attention_mask)
+        x = x + self.self_attn(self.norm1(x), attention_mask)
 
         # Feed-forward with residual connection and layer norm
         x = x + self.feed_forward(self.norm2(x))        
