@@ -23,6 +23,7 @@ optimizer:
 #Trainer
 max_epochs: 200
 gpus: 1
+precision: 'bf16-mixed'
 
 
 #Wandb

@@ -8,3 +8,4 @@ d_ff: 1024
 max_seq_len: 256
 dropout: 0.0
 conditional: true
+use_flash: true

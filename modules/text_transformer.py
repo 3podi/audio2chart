@@ -10,7 +10,7 @@ import inspect
 from modules.scheduler import LinearWarmupCosineAnnealingLR
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1):
+    def __init__(self, d_model, n_heads, dropout=0.1, use_flash=False):
         super().__init__()
         assert d_model % n_heads == 0
         
@@ -24,41 +24,49 @@ class MultiHeadAttention(nn.Module):
         self.linear_out = nn.Linear(d_model, d_model)
         
         self.dropout = nn.Dropout(dropout)
+        self.use_flash = use_flash
 
     def forward(self, x, attention_mask=None):
-        batch_size, seq_len, d_model = x.size()
-        
-        # Linear transformations and split into heads
-        Q = self.w_q(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)   # (B, nh, T, hs)
-        K = self.w_k(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-        V = self.w_v(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-        
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) * (1.0 / math.sqrt(self.d_k))
-        
-        # Create causal mask (lower triangular)
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool))
-        scores = scores.masked_fill(~causal_mask, float('-inf'))
-        
-        # Apply padding mask if provided
+        """
+        x: (B, T, d_model)
+        attention_mask: (B, T) with 1=keep, 0=pad
+        """
+        B, T, _ = x.size()
+
+        # Project and split into heads
+        Q = self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, T, Dk)
+        K = self.w_k(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        V = self.w_v(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+
+        # causal mask (T, T)
+        causal_mask = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))  # (T, T)
+
         if attention_mask is not None:
-            # attention_mask shape: (batch_size, seq_len) with 0 == padding_tokens
-            # Convert to (batch_size, 1, 1, seq_len) for broadcasting
-            padding_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            scores = scores.masked_fill(padding_mask == 0, float('-inf'))
-        
-        # Apply softmax and dropout
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Apply attention to values
-        out = torch.matmul(attn_weights, V)
-        
-        # Concatenate heads and apply output projection
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
-        out = self.linear_out(out)
-        
-        return out
+            # Only need to mask keys (broadcast over queries & heads)
+            pad_mask = attention_mask[:, None, None, :].bool()  # (B, 1, 1, T)
+            attn_mask = causal_mask[None, None, :, :] & pad_mask
+        else:
+            attn_mask = causal_mask[None, None, :, :]  # (1, 1, T, T)
+
+        # FlashAttention
+        if self.use_flash:
+            out = F.scaled_dot_product_attention(
+                Q, K, V,
+                attn_mask=attn_mask,  # boolean mask
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False       # we already handle causal
+            )
+        else:
+            # Regular attention
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+            scores = scores.masked_fill(~attn_mask, float('-inf'))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = self.dropout(attn_weights)
+            out = torch.matmul(attn_weights, V)
+
+        # Merge heads
+        out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        return self.linear_out(out)
 
 
 class FeedForward(nn.Module):
@@ -73,9 +81,9 @@ class FeedForward(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1, use_flash=False):
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, n_heads, dropout)
+        self.self_attn = MultiHeadAttention(d_model, n_heads, dropout, use_flash)
         self.feed_forward = FeedForward(d_model, d_ff, dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -122,7 +130,7 @@ class PositionalEncoding(nn.Module):
 
 class TransformerDecoderOnly(nn.Module):
     def __init__(self, vocab_size, pad_token_id, eos_token_id, d_model=512, n_heads=8, n_layers=6, 
-                 d_ff=2048, max_seq_len=5000, dropout=0.1, conditional=False, weigth_tying=False):
+                 d_ff=2048, max_seq_len=5000, dropout=0.1, conditional=False, use_flash=False, weigth_tying=False):
         super().__init__()
         
         self.d_model = d_model
@@ -138,7 +146,7 @@ class TransformerDecoderOnly(nn.Module):
         
         # Decoder layers
         self.layers = nn.ModuleList([
-            DecoderBlock(d_model, n_heads, d_ff, dropout)
+            DecoderBlock(d_model, n_heads, d_ff, dropout, use_flash)
             for _ in range(n_layers)
         ])
         
@@ -284,7 +292,8 @@ class NotesTransformer(L.LightningModule):
             d_ff = cfg_model.d_ff,
             max_seq_len = cfg_model.max_seq_len,
             dropout = cfg_model.dropout,
-            conditional= cfg_model.conditional,
+            conditional = cfg_model.conditional,
+            use_flash = cfg_model.use_flash
         )
 
         self.cfg_optimizer = cfg_optimizer
@@ -346,7 +355,7 @@ class NotesTransformer(L.LightningModule):
                     for class_id in unique_classes:
                         # Create mask for current class among valid tokens
                         class_mask = (valid_class_ids == class_id)
-                        
+
                         if class_mask.sum() > 0:  # Only compute if class has valid tokens
                             # Filter predictions and targets for this class
                             class_logits = valid_logits[class_mask]
