@@ -108,13 +108,14 @@ def main(config: DictConfig):
 
     # Trainer
     trainer = L.Trainer(
-        max_epochs= config.max_epochs,
-        accelerator= "gpu" if config.gpus > 0 else "cpu",
-        devices= config.gpus if config.gpus > 0 else 1,
-        enable_checkpointing=False,
-        callbacks= [lr_monitor, early_stop_callback, track_grad_norm],
-        log_every_n_steps= 10,
-        logger= wandb_logger,
+        max_epochs = config.max_epochs,
+        accelerator = "gpu" if config.gpus > 0 else "cpu",
+        devices = config.gpus if config.gpus > 0 else 1,
+        enable_checkpointing = False,
+        callbacks = [lr_monitor, early_stop_callback, track_grad_norm],
+        log_every_n_steps = 10,
+        logger = wandb_logger,
+        precision = config.precision
         #default_root_dir=checkpoint_path,
         #check_val_every_n_epoch=cfg["val_frequency"],
         #num_sanity_val_steps=0,
