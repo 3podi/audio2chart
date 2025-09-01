@@ -9,8 +9,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
 from chart.tokenizer import SimpleTokenizerGuitar
 
-from dataloader.utils_dataloader import find_chart_files
-
 DIFFICULTIES = ['Expert', 'Hard', 'Medium', 'Easy']
 INSTRUMENTS = ['Single']
 DIFF_MAPPING = {
