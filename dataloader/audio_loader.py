@@ -4,7 +4,7 @@ import torch
 import torchaudio
 
 import random
-from typing import Dict, Union, List
+from typing import Dict, Union, List, Optional
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
@@ -39,11 +39,16 @@ class SimpleAudioTextDataset(Dataset):
     def __init__(
         self,
         data_file: str,
+        bos_token: int, 
+        eos_token: int, 
+        pad_token: int,
+        max_length: int = 256,
         difficulties = ['Expert'],
         instruments = ['Single'],
         window_seconds: float = 10.0,
         audio_processor = None,
         tokenizer = None,
+        conditional = False
     ):
         with open(data_file, "r") as f:
             self.data = json.load(f)
@@ -53,6 +58,12 @@ class SimpleAudioTextDataset(Dataset):
         self.window_seconds = window_seconds
         self.audio_processor = audio_processor
         self.tokenizer = tokenizer
+        self.conditional = conditional
+
+        self.bos_token = bos_token
+        self.eos_token = eos_token
+        self.pad_token = pad_token
+        self.max_length = max_length
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
 
@@ -67,7 +78,6 @@ class SimpleAudioTextDataset(Dataset):
         assert len(target_section) == 1, 'This dataset requires 1 target section per item. Format input data files in triplets (audio_path,chart_path,target_section)'
 
         # --- load audio --- # TODO: audio window larger than chart notes time, multiple chunks per audio
-        # TODO: process/load only the target label, change how read_chart works in the chart_processor
 
         waveform, sr = torchaudio.load(audio_path)
         if sr != self.audio_processor.sampling_rate:
@@ -116,15 +126,33 @@ class SimpleAudioTextDataset(Dataset):
             ]
         else:
             diff = [-1]
+        
+        # pad for easily truncate as note seq - for duration and note time compute loss only when
+        # note values target is not pad or eos, need to compute loss only on real notes time/duration
+        note_times = [0.0] + note_times + [1.0]
+        note_durations = [0.0] + note_durations + [0.0]
+        
+        note_values = [self.bos_token] + note_values + [self.eos_tokens]
+        # --- handle padding and attention mask for note sequence, LLM like --- 
+        if len(note_values) >= self.max_length:
+            note_values = note_values[:self.max_length]
+            note_times = note_times[:self.max_length]
+            note_durations = note_durations[:self.max_length]
+            attention_mask = [1] * (self.max_length - 1)
+            padded_tokens = note_values
+        else:
+            attention_mask = [1] * len(note_values) + [0] * (self.max_length -1 - len(note_values))
+            padded_tokens = note_values + [self.pad_token] * (self.max_length - len(note_values))
 
 
         # --- return sample ---
         return {
-            "audio": waveform,
-            "note_times": note_times,
-            "note_values": note_values,
-            "note_durations": note_durations,
-            "cond_diff": diff
+            "audio": waveform,  # already tensor
+            "note_times": torch.tensor(note_times, dtype=torch.float32),
+            "note_values": torch.tensor(padded_tokens, dtype=torch.long),
+            "note_durations": torch.tensor(note_durations, dtype=torch.float32),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "cond_diff": torch.tensor(diff, dtype=torch.long)
         }
 
     def __getitem__(self, idx: int):
@@ -141,3 +169,141 @@ class SimpleAudioTextDataset(Dataset):
         raise RuntimeError(f"Failed to load a valid sample after {self.max_retries} attempts")
     
 
+def create_audio_chart_dataloader(
+        data_file: str,
+        audio_processor,
+        window_seconds,
+        tokenizer, 
+        difficulties: List[str] = ['Expert'], 
+        instruments: List[str] = ['Single'],
+        batch_size: int = 32,
+        max_length: int = 512,
+        num_workers: int = 4,
+        shuffle: bool = True,
+        conditional: bool = False,
+    ):
+    """
+    Create a DataLoader for (audio,notes) pairs with proper batching and tokenization and audio processing
+    
+    Args:
+        data_file: str for file with triplets (audio_path, chart_path, target_section)
+        difficulties: Difficulties to include
+        instruments: Instruments to include  
+        batch_size: Batch size
+        max_length: Maximum sequence length (will pad/truncate to this)
+        num_workers: Number of worker processes
+    """
+    
+    if vocab is None:
+        vocab = tokenizer.mapping_noteseqs2int
+        bos_token_id = len(vocab.keys())
+        eos_token_id = bos_token_id + 1 
+        pad_token_id = eos_token_id + 1
+        vocab['<bos>'] = bos_token_id
+        vocab['<eos>'] = eos_token_id 
+        vocab['<PAD>'] = pad_token_id
+
+    #collator = AudioChartCollator(
+    #    bos_token=vocab['<bos>'], 
+    #    eos_token=vocab['<eos>'], 
+    #    pad_token=vocab['<PAD>'],
+    #    max_length=max_length,
+    #    conditional=conditional
+    #)
+    
+
+    dataset = SimpleAudioTextDataset(
+        data_file = data_file,
+        difficulties = difficulties,
+        instruments = instruments,
+        window_seconds = window_seconds,
+        audio_processor = audio_processor,
+        tokenizer = tokenizer,
+        conditional = conditional,
+        bos_token = vocab['<bos>'], 
+        eos_token = vocab['<eos>'], 
+        pad_token = vocab['<PAD>'],
+        max_length = max_length
+    )
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        #collate_fn=collator
+    )
+    
+    return dataloader, vocab
+
+class AudioChartCollator:
+    def __init__(self, bos_token, eos_token, pad_token=-100, max_length=512, conditional=False):
+        self.bos_token = bos_token
+        self.eos_token = eos_token
+        self.pad_token = pad_token
+        self.max_length = max_length
+        self.conditional = conditional
+    
+    def __call__(self, batch):
+        return chart_collate_fn(
+            batch,
+            bos_token=self.bos_token,
+            eos_token=self.eos_token,
+            pad_token=self.pad_token,
+            max_length=self.max_length,
+            conditional=self.conditional
+        )
+
+
+def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512, conditional=False):
+    """Custom collate function with proper batching and padding.
+       Input batch should be already tokenized.
+    """
+    if not batch:
+        return {}
+    
+    # Tokenize all samples
+    padded_batch = []
+    attention_masks = []
+    diff_batch = []
+    
+    for sample, diff in batch:
+
+        sample = [bos_token] + sample + [eos_token]
+
+        # Handle padding and attention mask
+        if len(sample) >= max_length:
+            sample = sample[:max_length]
+            attention_mask = [1] * (max_length-1)
+            padded_tokens = sample
+        else:
+            attention_mask = [1] * len(sample) + [0] * (max_length -1 - len(sample))
+            padded_tokens = sample + [pad_token] * (max_length - len(sample))
+
+        padded_batch.append(padded_tokens)
+        attention_masks.append(attention_mask)
+        diff_batch.append(diff)
+        
+        # Keep metadata for reference
+        #metadata = {
+        #    'file_path': sample.get('file_path', ''),
+        #    'section_name': sample.get('section_name', ''),
+        #    'song_metadata': sample.get('song_metadata', {}),
+        #    'original_length': len(tokens)
+        #}
+        #metadata_batch.append(metadata)
+    
+    # Convert to tensors
+    input_ids = torch.tensor(padded_batch, dtype=torch.long)
+    attention_mask = torch.tensor(attention_masks, dtype=torch.long)
+    if conditional:
+        input_diff = torch.tensor(diff_batch, dtype=torch.long)
+    else:
+        input_diff = None  # No diff for unconditional case
+
+    return {
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'cond_diff': input_diff
+    }
