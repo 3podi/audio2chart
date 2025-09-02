@@ -58,9 +58,15 @@ class ChartProcessor():
                 section_content[name] = match.group(1).strip()
         return section_content
     
-    def extract_sections2(self):
+    def extract_sections2(self, target_sections=None):
         section_content = {}
         
+        if target_sections:
+            if not isinstance(target_sections, list):
+                target_sections = [target_sections]
+        else:
+            target_sections = self.sections
+
         for section_name in self.sections:
             # Find the section header
             header_pattern = rf'\[{re.escape(section_name)}\]\s*\{{'
@@ -92,11 +98,12 @@ class ChartProcessor():
         
         return section_content
     
-    def read_chart(self, chart_path, chart_text=None):
+    def read_chart(self, chart_path, chart_text=None, target_sections=None):
         
         self.open_chart(chart_path, chart_text=chart_text)
 
-        sections = self.extract_sections2()
+        # === Read sections === target sections reads only the target sections
+        sections = self.extract_sections2(target_sections=target_sections)
 
         # === Parse SyncTrack BPMs ===
         if "SyncTrack" in sections:
