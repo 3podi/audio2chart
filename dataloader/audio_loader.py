@@ -282,7 +282,7 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         note_values = sample["note_values"]
         diff = sample["cond_diff"]
 
-        # add BOS/EOS
+        # add BOS/EOS + placeholders values 
         note_times = [0.0] + note_times + [1.0]
         note_durations = [0.0] + note_durations + [0.0]
         note_values = [bos_token] + note_values + [eos_token]
