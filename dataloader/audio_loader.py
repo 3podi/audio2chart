@@ -127,6 +127,19 @@ class SimpleAudioTextDataset(Dataset):
         else:
             diff = [-1]
         
+        # --- return sample, will pad in collator with max_batch_len ---
+        return {
+            "audio": waveform,  # already tensor
+            "note_times": note_times,
+            "note_values": note_values,
+            "note_durations": note_durations,
+            "cond_diff": diff,           
+            #"note_times": torch.tensor(note_times, dtype=torch.float32),
+            #"note_values": torch.tensor(note_values, dtype=torch.long),
+            #"note_durations": torch.tensor(note_durations, dtype=torch.float32),
+            #"cond_diff": torch.tensor(diff, dtype=torch.long)
+        }
+    
         # pad for easily truncate as note seq - for duration and note time compute loss only when
         # note values target is not pad or eos, need to compute loss only on real notes time/duration
         note_times = [0.0] + note_times + [1.0]
@@ -145,15 +158,6 @@ class SimpleAudioTextDataset(Dataset):
             padded_tokens = note_values + [self.pad_token] * (self.max_length - len(note_values))
 
 
-        # --- return sample ---
-        return {
-            "audio": waveform,  # already tensor
-            "note_times": torch.tensor(note_times, dtype=torch.float32),
-            "note_values": torch.tensor(padded_tokens, dtype=torch.long),
-            "note_durations": torch.tensor(note_durations, dtype=torch.float32),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
-            "cond_diff": torch.tensor(diff, dtype=torch.long)
-        }
 
     def __getitem__(self, idx: int):
         for attempt in range(self.max_retries):
@@ -203,14 +207,13 @@ def create_audio_chart_dataloader(
         vocab['<eos>'] = eos_token_id 
         vocab['<PAD>'] = pad_token_id
 
-    #collator = AudioChartCollator(
-    #    bos_token=vocab['<bos>'], 
-    #    eos_token=vocab['<eos>'], 
-    #    pad_token=vocab['<PAD>'],
-    #    max_length=max_length,
-    #    conditional=conditional
-    #)
-    
+    collator = AudioChartCollator(
+        bos_token=vocab['<bos>'], 
+        eos_token=vocab['<eos>'], 
+        pad_token=vocab['<PAD>'],
+        max_length=max_length,
+        conditional=conditional
+    )
 
     dataset = SimpleAudioTextDataset(
         data_file = data_file,
@@ -232,7 +235,7 @@ def create_audio_chart_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        #collate_fn=collator
+        collate_fn=collator
     )
     
     return dataloader, vocab
@@ -258,52 +261,72 @@ class AudioChartCollator:
 
 def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512, conditional=False):
     """Custom collate function with proper batching and padding.
-       Input batch should be already tokenized.
+       Sequences are padded to max_batch_len (capped by max_length).
     """
     if not batch:
         return {}
     
-    # Tokenize all samples
-    padded_batch = []
+    # --- find max batch sequence length (with BOS/EOS), but cap at max_length
+    max_batch_len = max(len(sample["note_values"]) for sample in batch) + 2  # +2 for BOS/EOS
+    max_batch_len = min(max_batch_len, max_length)
+
+    batch_note_times = []
+    batch_note_durations = []
+    batch_note_values = []
+    batch_diff = []
     attention_masks = []
-    diff_batch = []
     
-    for sample, diff in batch:
+    for sample in batch:
+        note_times = sample["note_times"]
+        note_durations = sample["note_durations"]
+        note_values = sample["note_values"]
+        diff = sample["cond_diff"]
 
-        sample = [bos_token] + sample + [eos_token]
+        # add BOS/EOS
+        note_times = [0.0] + note_times + [1.0]
+        note_durations = [0.0] + note_durations + [0.0]
+        note_values = [bos_token] + note_values + [eos_token]
 
-        # Handle padding and attention mask
-        if len(sample) >= max_length:
-            sample = sample[:max_length]
-            attention_mask = [1] * (max_length-1)
-            padded_tokens = sample
-        else:
-            attention_mask = [1] * len(sample) + [0] * (max_length -1 - len(sample))
-            padded_tokens = sample + [pad_token] * (max_length - len(sample))
+        # truncate if longer than max_batch_len
+        note_times = note_times[:max_batch_len]
+        note_durations = note_durations[:max_batch_len]
+        note_values = note_values[:max_batch_len]
 
-        padded_batch.append(padded_tokens)
+
+        # --- pad up to max_batch_len
+        seq_len = len(note_values)
+        pad_len = max_batch_len - seq_len
+
+        padded_values = note_values + [pad_token] * pad_len
+        padded_times = note_times + [0.0] * pad_len
+        padded_durations = note_durations + [0.0] * pad_len
+
+        attn_len = seq_len - 1
+        attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
+
+        # append
+        batch_note_values.append(padded_values)
+        batch_note_times.append(padded_times)
+        batch_note_durations.append(padded_durations)
         attention_masks.append(attention_mask)
-        diff_batch.append(diff)
-        
-        # Keep metadata for reference
-        #metadata = {
-        #    'file_path': sample.get('file_path', ''),
-        #    'section_name': sample.get('section_name', ''),
-        #    'song_metadata': sample.get('song_metadata', {}),
-        #    'original_length': len(tokens)
-        #}
-        #metadata_batch.append(metadata)
-    
-    # Convert to tensors
-    input_ids = torch.tensor(padded_batch, dtype=torch.long)
-    attention_mask = torch.tensor(attention_masks, dtype=torch.long)
+        batch_diff.append(diff)
+
+    # convert to tensors
+    batch_note_values = torch.tensor(batch_note_values, dtype=torch.long)
+    batch_note_times = torch.tensor(batch_note_times, dtype=torch.float)
+    batch_note_durations = torch.tensor(batch_note_durations, dtype=torch.float)
+    attention_masks = torch.tensor(attention_masks, dtype=torch.long)
     if conditional:
-        input_diff = torch.tensor(diff_batch, dtype=torch.long)
+        batch_diff = torch.tensor(batch_diff, dtype=torch.long)
     else:
-        input_diff = None  # No diff for unconditional case
+        batch_diff = None  # No diff for unconditional case
 
     return {
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'cond_diff': input_diff
+        "note_values": batch_note_values,
+        "note_times": batch_note_times,
+        "note_durations": batch_note_durations,
+        "attention_mask": attention_masks,
+        "cond_diff": batch_diff,
     }
+
+        
