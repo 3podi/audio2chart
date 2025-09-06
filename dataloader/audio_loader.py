@@ -8,7 +8,6 @@ from typing import Dict, Union, List, Optional
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
-from chart.tokenizer import SimpleTokenizerGuitar
 
 DIFFICULTIES = ['Expert', 'Hard', 'Medium', 'Easy']
 INSTRUMENTS = ['Single']
@@ -18,8 +17,6 @@ DIFF_MAPPING = {
     'Medium': 2,
     'Easy': 3
 }
-
-import json
 
 class SimpleAudioTextDataset(Dataset):
     """
@@ -38,7 +35,7 @@ class SimpleAudioTextDataset(Dataset):
 
     def __init__(
         self,
-        data_file: str,
+        data,
         bos_token: int, 
         eos_token: int, 
         pad_token: int,
@@ -50,9 +47,8 @@ class SimpleAudioTextDataset(Dataset):
         tokenizer = None,
         conditional = False
     ):
-        with open(data_file, "r") as f:
-            self.data = json.load(f)
-
+       
+        self.data = data       
         self.difficulties = difficulties
         self.instruments = instruments
         self.window_seconds = window_seconds
@@ -134,30 +130,7 @@ class SimpleAudioTextDataset(Dataset):
             "note_values": note_values,
             "note_durations": note_durations,
             "cond_diff": diff,           
-            #"note_times": torch.tensor(note_times, dtype=torch.float32),
-            #"note_values": torch.tensor(note_values, dtype=torch.long),
-            #"note_durations": torch.tensor(note_durations, dtype=torch.float32),
-            #"cond_diff": torch.tensor(diff, dtype=torch.long)
         }
-    
-        # pad for easily truncate as note seq - for duration and note time compute loss only when
-        # note values target is not pad or eos, need to compute loss only on real notes time/duration
-        note_times = [0.0] + note_times + [1.0]
-        note_durations = [0.0] + note_durations + [0.0]
-        
-        note_values = [self.bos_token] + note_values + [self.eos_tokens]
-        # --- handle padding and attention mask for note sequence, LLM like --- 
-        if len(note_values) >= self.max_length:
-            note_values = note_values[:self.max_length]
-            note_times = note_times[:self.max_length]
-            note_durations = note_durations[:self.max_length]
-            attention_mask = [1] * (self.max_length - 1)
-            padded_tokens = note_values
-        else:
-            attention_mask = [1] * len(note_values) + [0] * (self.max_length -1 - len(note_values))
-            padded_tokens = note_values + [self.pad_token] * (self.max_length - len(note_values))
-
-
 
     def __getitem__(self, idx: int):
         for attempt in range(self.max_retries):
@@ -174,7 +147,7 @@ class SimpleAudioTextDataset(Dataset):
     
 
 def create_audio_chart_dataloader(
-        data_file: str,
+        data,
         audio_processor,
         window_seconds,
         tokenizer, 
@@ -216,7 +189,7 @@ def create_audio_chart_dataloader(
     )
 
     dataset = SimpleAudioTextDataset(
-        data_file = data_file,
+        data_file = data,
         difficulties = difficulties,
         instruments = instruments,
         window_seconds = window_seconds,
