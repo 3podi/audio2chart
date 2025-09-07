@@ -5,7 +5,7 @@ import random
 
 from dataloader.audio_loader import create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
-from modules.text_transformer import NotesTransformer
+from modules.audio_transformer import AudioTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -120,7 +120,13 @@ def main(config: DictConfig):
     )
 
     # Model
-    model = 
+    model = AudioTransformer(
+        pad_token_id=vocab['<PAD>'],
+        eos_token_id=['<eos>'],
+        vocab_size=len(vocab),
+        cfg_model=config.model,
+        cfg_optimizer=config.optimizer
+    )
 
     # Callbacks
     #checkpoint_cb = L.pytorch.callbacks.ModelCheckpoint(
