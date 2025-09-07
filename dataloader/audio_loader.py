@@ -85,6 +85,11 @@ class SimpleAudioTextDataset(Dataset):
         end_sample = start_sample + window_samples
 
         waveform = waveform[:, start_sample:end_sample]
+        waveform = self.audio_processor(
+            raw_audio = waveform,
+            sampling_rate = self.audio_processor.sampling_rate,
+            return_tensors="pt" 
+        )
 
         # --- load notes ---
         notes = self.chart_processor.read_chart(chart_path=chart_path, target_sections=target_section).notes
@@ -243,6 +248,8 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
     max_batch_len = max(len(sample["note_values"]) for sample in batch) + 2  # +2 for BOS/EOS
     max_batch_len = min(max_batch_len, max_length)
 
+    batch_audio = []
+    batch_audio_mask = []
     batch_note_times = []
     batch_note_durations = []
     batch_note_values = []
@@ -250,6 +257,8 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
     attention_masks = []
     
     for sample in batch:
+        audio = sample['waveform']['input_ids']
+        audio_mask = sample['waveform']['padding_mask']
         note_times = sample["note_times"]
         note_durations = sample["note_durations"]
         note_values = sample["note_values"]
@@ -278,6 +287,8 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
 
         # append
+        batch_audio.append(audio)
+        batch_audio_mask.append(audio_mask)
         batch_note_values.append(padded_values)
         batch_note_times.append(padded_times)
         batch_note_durations.append(padded_durations)
@@ -295,9 +306,11 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         batch_diff = None  # No diff for unconditional case
 
     return {
+        "audio": batch_audio,
+        "audio_mask": batch_audio_mask,
         "note_values": batch_note_values,
-        "note_times": batch_note_times,
-        "note_durations": batch_note_durations,
+        #"note_times": batch_note_times,
+        #"note_durations": batch_note_durations,
         "attention_mask": attention_masks,
         "cond_diff": batch_diff,
     }
