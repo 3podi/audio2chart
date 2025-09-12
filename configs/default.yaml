@@ -1,6 +1,6 @@
 #Data Config
-root_folder: extracted_songs/
-batch_size: 128
+root_folder: ../dataset
+batch_size: 1
 validation_split: 0.8
 diff_list: 
   - Expert
