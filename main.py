@@ -5,7 +5,7 @@ import random
 
 from dataloader.audio_loader import create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
-from modules.audio_transformer import AudioTransformer
+from modules.audio_transformer import WaveformTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -91,7 +91,8 @@ def main(config: DictConfig):
         with open(f"{config.root_folder}/train_val_split/val.json", "r", encoding="utf-8") as f:
             val_files = json.load(f) 
 
-    audio_processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
+    #audio_processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
+    audio_processor = None
     tokenizer = SimpleTokenizerGuitar()
 
     train_dataloader, vocab = create_audio_chart_dataloader(
@@ -120,13 +121,15 @@ def main(config: DictConfig):
     )
 
     # Model
-    model = AudioTransformer(
+    model = WaveformTransformer(
         pad_token_id=vocab['<PAD>'],
         eos_token_id=['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
         cfg_optimizer=config.optimizer
     )
+
+    print(model.audio_encoder.compute_receptive_field)
 
     # Callbacks
     #checkpoint_cb = L.pytorch.callbacks.ModelCheckpoint(

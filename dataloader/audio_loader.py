@@ -151,6 +151,161 @@ class SimpleAudioTextDataset(Dataset):
         raise RuntimeError(f"Failed to load a valid sample after {self.max_retries} attempts")
     
 
+class WaveformDataset(Dataset):
+    def __init__(
+        self,
+        data,
+        bos_token: int, 
+        eos_token: int, 
+        pad_token: int,
+        max_length: int = 256,
+        difficulties = ['Expert'],
+        instruments = ['Single'],
+        window_seconds: float = 10.0,
+        sample_rate: int = 16000,
+        audio_processor = None,
+        tokenizer = None,
+        conditional = False,
+        augment = False,
+    ):
+       
+        self.data = data       
+        self.difficulties = difficulties
+        self.instruments = instruments
+        self.window_seconds = window_seconds
+        self.sample_rate = sample_rate
+        self.num_samples = int(sample_rate * window_seconds)
+        self.audio_processor = audio_processor
+        self.tokenizer = tokenizer
+        self.conditional = conditional
+
+        self.bos_token = bos_token
+        self.eos_token = eos_token
+        self.pad_token = pad_token
+        self.max_length = max_length
+
+        self.augment = augment
+
+        self.chart_processor = ChartProcessor(difficulties, instruments)
+
+    
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def _augment(self, waveform):
+        # Random gain
+        if random.random() < 0.5:
+            gain_db = random.uniform(-6, 6)  # -6dB to +6dB
+            waveform = waveform * (10 ** (gain_db / 20))
+
+        # Additive Gaussian noise
+        if random.random() < 0.5:
+            noise_amp = 0.005 * waveform.abs().max() * random.random()
+            waveform = waveform + noise_amp * torch.randn_like(waveform)
+
+        # Random polarity flip
+        if random.random() < 0.3:
+            waveform = -waveform
+
+        return waveform
+
+    def _load_item(self, audio_path: str, chart_path: str, target_section: str) -> Dict[str, Union[torch.Tensor, str, float]]:
+            
+        if target_section:
+            if not isinstance(target_sections, list):
+                target_sections = [target_sections]
+        assert len(target_section) == 1, 'This dataset requires 1 target section per item. Format input data files in triplets (audio_path,chart_path,target_section)'
+
+        # --- load audio --- # TODO: audio window larger than chart notes time, multiple chunks per audio
+
+        waveform, sr = torchaudio.load(audio_path)
+        # Convert to mono
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+
+        # Resample if needed
+        if sr != self.sample_rate:
+            waveform = torchaudio.functional.resample(waveform, sr, self.sample_rate)
+
+        # Pad/crop to fixed length, TODO allow to train on uncomplete chunks
+        if waveform.size(1) < self.num_samples:
+            pad_len = self.num_samples - waveform.size(1)
+            waveform = torch.nn.functional.pad(waveform, (0, pad_len))
+
+        #if waveform.size(1) > self.num_samples:
+        #    start = random.randint(0, waveform.size(1) - self.num_samples)
+        #    waveform = waveform[:, start:start+self.num_samples]
+
+        window_samples = int(self.window_seconds * self.sample_rate)
+        max_start = waveform.shape[-1] - window_samples
+        start_sample = random.randint(0, max_start) 
+        end_sample = start_sample + window_samples
+
+        waveform = waveform[:, start_sample:end_sample]
+        if self.augment:
+            waveform = self._augment(waveform)
+
+        # --- load notes ---
+        notes = self.chart_processor.read_chart(chart_path=chart_path, target_sections=target_section).notes
+        bpm_events = self.chart_processor.synctrack
+        resolution = int(self.chart_processor.song_metadata['Resolution'])
+        offset = float(self.chart_processor.song_metadata['Offset'])
+
+        start_seconds = start_sample / self.audio_processor.sampling_rate
+        end_seconds = end_sample / self.audio_processor.sampling_rate
+
+        # --- encode + convert to seconds ---
+        tokenized_chart = self.tokenizer.encode(note_list=notes)
+        tokenized_chart = self.tokenizer.format_seconds(
+            tokenized_chart, bpm_events,
+            resolution=resolution, offset=offset
+        )
+
+        # --- filter by window --- 
+        filtered = [
+            (t, v, d) for (t, v, d) in tokenized_chart
+            if start_seconds <= t < end_seconds
+        ]
+
+        # Note times normalized in [0,1] - TODO: normalize duration with data stats
+        if filtered:
+            note_times, note_values, note_durations = map(list, zip(*filtered))
+            note_times -= start_seconds
+            note_times = note_times / self.window_seconds
+        else:
+            note_times, note_values, note_durations = [], [], []
+
+        if self.conditional:
+            diff = [
+                mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in target_section
+            ]
+        else:
+            diff = [-1]
+        
+        # --- return sample, will pad in collator with max_batch_len ---
+        return {
+            "audio": waveform,  # already tensor
+            "note_times": note_times,
+            "note_values": note_values,
+            "note_durations": note_durations,
+            "cond_diff": diff,           
+        }
+    
+    def __getitem__(self, idx: int):
+        for attempt in range(10):
+            try:
+                item = self.data[idx] if attempt == 0 else random.choice(self.data)
+                return self._load_item(item["audio_path"], item["chart_path"], item["target_section"])
+            except Exception as e:
+                print(f"[Warning] Failed to load {item['audio_path']}: {e}")
+                # try another random sample
+                continue
+
+        # if all retries fail, raise error
+        raise RuntimeError(f"Failed to load a valid sample after {self.max_retries} attempts")
+    
+
+
 def create_audio_chart_dataloader(
         data,
         audio_processor,
@@ -163,6 +318,7 @@ def create_audio_chart_dataloader(
         num_workers: int = 4,
         shuffle: bool = True,
         conditional: bool = False,
+        vocab = None
     ):
     """
     Create a DataLoader for (audio,notes) pairs with proper batching and tokenization and audio processing
@@ -193,8 +349,8 @@ def create_audio_chart_dataloader(
         conditional=conditional
     )
 
-    dataset = SimpleAudioTextDataset(
-        data_file = data,
+    dataset = WaveformDataset(
+        data = data,
         difficulties = difficulties,
         instruments = instruments,
         window_seconds = window_seconds,
@@ -307,7 +463,7 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
 
     return {
         "audio": batch_audio,
-        "audio_mask": batch_audio_mask,
+        #"audio_mask": batch_audio_mask,
         "note_values": batch_note_values,
         #"note_times": batch_note_times,
         #"note_durations": batch_note_durations,
