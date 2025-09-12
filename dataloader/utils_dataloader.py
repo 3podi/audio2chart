@@ -28,7 +28,6 @@ def find_chart_files(root_folder):
                 chart_files.append(os.path.join(root, file))
     return chart_files
 
-
 def find_audio_files(
     root,
     difficulties,
@@ -36,7 +35,6 @@ def find_audio_files(
     output_json="results/audio_dataset.json",
     skipped_json="results/audio_skipped.json"
 ):
-    
     start_time = timeit.default_timer()
 
     processor = ChartProcessor(difficulties, instruments)
@@ -48,33 +46,20 @@ def find_audio_files(
             # --- check for chart file
             if "notes.chart" not in filenames:
                 if "notes.mid" in filenames:
-                    skipped.append({
-                        "path": dirpath,
-                        "reason": ".mid chart"
-                    })
+                    skipped.append({"path": dirpath, "reason": ".mid chart"})
                 else:
-                    skipped.append({
-                        "path": dirpath,
-                        "reason": "missing_chart"
-                    })
+                    skipped.append({"path": dirpath, "reason": "missing_chart"})
                 continue
 
             # --- check for audio file
             audio_file = None
-            if "song.opus" in filenames:
-                audio_file = "song.opus"
-            elif "song.ogg" in filenames:
-                audio_file = "song.ogg"
-            elif "guitar.opus" in filenames:
-                audio_file = "guitar.opus"
-            elif "guitar.ogg" in filenames:
-                audio_file = "guitar.ogg"
+            for candidate in ["song.opus", "song.ogg", "guitar.opus", "guitar.ogg"]:
+                if candidate in filenames:
+                    audio_file = candidate
+                    break
 
             if audio_file is None:
-                skipped.append({
-                    "path": dirpath,
-                    "reason": "missing_audio"
-                })
+                skipped.append({"path": dirpath, "reason": "missing_audio"})
                 continue
 
             chart_path = Path(dirpath) / "notes.chart"
@@ -88,9 +73,9 @@ def find_audio_files(
                     "audio_path": str(audio_path),
                     "chart_path": str(chart_path),
                     "difficulty": section,
-                    #"synctrack": processor.synctrack,
-                    #"notes": notes,
-                    #"song_metadata": processor.song_metadata
+                    # "synctrack": processor.synctrack,
+                    # "notes": notes,
+                    # "song_metadata": processor.song_metadata,
                 })
 
         except Exception as e:
@@ -100,7 +85,7 @@ def find_audio_files(
                 "error": str(e)
             })
 
-    # Save processed entries
+    # Save processed entries (single JSON array)
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(entries, f, indent=2)
 
@@ -112,33 +97,39 @@ def find_audio_files(
     print(f"✅ Saved {len(entries)} entries to {output_json}")
     print(f"⚠️  Skipped {len(skipped)} folders -> {skipped_json}")
     print(f"⏱  Processing time: {elapsed:.2f} seconds")
-    
-    return entries, skipped
 
+    return output_json, skipped_json
+
+
+from collections import defaultdict
+import json
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 def split_json_entries_by_audio(
-    input_jsonl: str,
-    train_jsonl: str,
-    val_jsonl: str,
+    input_json: str,
+    train_json: str,
+    val_json: str,
     val_ratio: float = 0.1,
     random_seed: int = 42
 ):
     """
-    Split dataset entries into train/validation by audio_path while 
-    approximating stratification by difficulty. All entries from the same 
+    Split dataset entries into train/validation by audio_path while
+    approximating stratification by difficulty. All entries from the same
     audio_path go into the same split.
     """
 
-    # --- load all entries
+    # --- load dataset (JSON array)
+    with open(input_json, "r", encoding="utf-8") as f:
+        entries = json.load(f)
+
     audio_groups = defaultdict(list)  # audio_path -> list of entries
     difficulties_per_audio = defaultdict(set)
 
-    with open(input_jsonl, "r", encoding="utf-8") as f:
-        for line in f:
-            entry = json.loads(line)
-            audio_path = entry["audio_path"]
-            audio_groups[audio_path].append(entry)
-            difficulties_per_audio[audio_path].add(entry["difficulty"])
+    for entry in entries:
+        audio_path = entry["audio_path"]
+        audio_groups[audio_path].append(entry)
+        difficulties_per_audio[audio_path].add(entry["difficulty"])
 
     audio_paths = list(audio_groups.keys())
 
@@ -148,17 +139,28 @@ def split_json_entries_by_audio(
         for d in diffs:
             difficulty_to_paths[d].append(path)
 
-    # --- approximate stratified split by audio_path
-    train_paths = set()
-    val_paths = set()
-    assigned_paths = set()
+    train_paths, val_paths, assigned_paths = set(), set(), set()
 
+    # --- stratified split (approximate)
     for d, paths in difficulty_to_paths.items():
         available = list(set(paths) - assigned_paths)
         if not available:
             continue
 
+        if len(available) == 1:
+            # handle edge case: only 1 sample
+            only_path = available[0]
+            if len(val_paths) / max(1, len(audio_paths)) < val_ratio:
+                val_paths.add(only_path)
+            else:
+                train_paths.add(only_path)
+            assigned_paths.add(only_path)
+            continue
+
         val_count = max(1, int(len(available) * val_ratio))
+        # Ensure val_count < len(available)
+        val_count = min(val_count, len(available) - 1)
+
         train_split, val_split = train_test_split(
             available, test_size=val_count, random_state=random_seed
         )
@@ -166,25 +168,29 @@ def split_json_entries_by_audio(
         val_paths.update(val_split)
         assigned_paths.update(available)
 
-    # assign any remaining unassigned paths
+    # --- assign any remaining unassigned paths
     remaining = set(audio_paths) - train_paths - val_paths
     for path in remaining:
-        if len(val_paths) / len(audio_paths) < val_ratio:
+        if len(val_paths) / max(1, len(audio_paths)) < val_ratio:
             val_paths.add(path)
         else:
             train_paths.add(path)
 
-    # --- write all entries to JSONL
-    def write_entries(paths, out_file):
-        with open(out_file, "w", encoding="utf-8") as f:
-            for path in tqdm(paths, desc=f"Writing {out_file}"):
-                for entry in audio_groups[path]:
-                    f.write(json.dumps(entry) + "\n")
+    # --- collect entries
+    train_entries = [e for p in train_paths for e in audio_groups[p]]
+    val_entries = [e for p in val_paths for e in audio_groups[p]]
 
-    write_entries(train_paths, train_jsonl)
-    write_entries(val_paths, val_jsonl)
+    # --- write outputs
+    with open(train_json, "w", encoding="utf-8") as f:
+        json.dump(train_entries, f, indent=2)
 
+    with open(val_json, "w", encoding="utf-8") as f:
+        json.dump(val_entries, f, indent=2)
+
+    actual_ratio = len(val_paths) / max(1, len(audio_paths))
     print(f"✅ Train: {len(train_paths)} audio files, Val: {len(val_paths)} audio files")
-    print(f"✅ Train JSONL: {train_jsonl}, Val JSONL: {val_jsonl}")
+    print(f"✅ Train JSON: {train_json}, Val JSON: {val_json}")
+    print(f"📊 Desired val ratio: {val_ratio:.2f}, Actual: {actual_ratio:.2f}")
 
     return train_paths, val_paths
+

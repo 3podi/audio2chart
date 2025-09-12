@@ -13,7 +13,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
 
-from transformers import AutoProcessor, EncodecModel
+#from transformers import AutoProcessor, EncodecModel
 from chart.tokenizer import SimpleTokenizerGuitar
 
 import json
@@ -75,20 +75,20 @@ def main(config: DictConfig):
             root=config.root_folder,
             difficulties=list(config.diff_list),
             instruments=list(config.inst_list),
-            output_json=f"{config.root_folder}/train_val_split/audio_dataset.json",
-            skipped_json=f"{config.root_folder}/train_val_split/audio_skipped.json",
+            output_json=f"{config.root_folder}/audio_dataset.json",
+            skipped_json=f"{config.root_folder}/audio_skipped.json",
         )
 
         split_json_entries_by_audio(
-            input_jsonl=f"{config.root_folder}/train_val_split/audio_dataset.json",
-            train_jsonl=f"{config.root_folder}/train_val_split/train.json",
-            val_jsonl=f"{config.root_folder}/train_val_split/val.json",
+            input_json=f"{config.root_folder}/audio_dataset.json",
+            train_json=f"{config.root_folder}/train.json",
+            val_json=f"{config.root_folder}/val.json",
             val_ratio=config.validation_split,
         )
 
-        with open(f"{config.root_folder}/train_val_split/train.json", "r", encoding="utf-8") as f:
+        with open(f"{config.root_folder}/train.json", "r", encoding="utf-8") as f:
             train_files = json.load(f) 
-        with open(f"{config.root_folder}/train_val_split/val.json", "r", encoding="utf-8") as f:
+        with open(f"{config.root_folder}/val.json", "r", encoding="utf-8") as f:
             val_files = json.load(f) 
 
     #audio_processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
@@ -129,7 +129,7 @@ def main(config: DictConfig):
         cfg_optimizer=config.optimizer
     )
 
-    print(model.audio_encoder.compute_receptive_field)
+    print(model.audio_encoder.compute_receptive_field())
 
     # Callbacks
     #checkpoint_cb = L.pytorch.callbacks.ModelCheckpoint(
@@ -152,10 +152,10 @@ def main(config: DictConfig):
         callbacks = [lr_monitor, early_stop_callback, track_grad_norm],
         log_every_n_steps = 10,
         logger = wandb_logger,
-        precision = config.precision
+        precision = config.precision,
         #default_root_dir=checkpoint_path,
         #check_val_every_n_epoch=cfg["val_frequency"],
-        #num_sanity_val_steps=0,
+        num_sanity_val_steps=0,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
         #gradient_clip_val=1.0,
     )

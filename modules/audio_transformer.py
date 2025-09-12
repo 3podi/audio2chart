@@ -1,6 +1,6 @@
 from modules.text_transformer import MultiHeadAttention, FeedForward, PositionalEncoding
 from modules.audio_compression import SEANetEncoder
-from transformers import EncodecModel
+#from transformers import EncodecModel
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -702,50 +702,39 @@ class WaveformTransformer(L.LightningModule):
                 "frequency": 1
             },
         }
-    
+
+
     def configure_optimizers(self):
-        # Transformer optimizer (original config)
-        transformer_optimizer = self.transformer.configure_optimizers(
-            weight_decay=self.cfg_optimizer.weight_decay,
-            learning_rate=self.cfg_optimizer.lr,
-            betas=(0.9, 0.95),
-            device_type=self.device
-        )
-        
-        # Audio encoder optimizer (maybe lower LR since it's pretrained)
-        audio_optimizer = torch.optim.AdamW(
-            self.audio_encoder.parameters(),
-            weight_decay=self.cfg_optimizer.weight_decay,
-            lr=self.cfg_optimizer.lr, # * 0.1,  # Lower LR for audio encoder
-            betas=(0.9, 0.95)
-        )
-        
-        # Different schedulers
-        transformer_scheduler = LinearWarmupCosineAnnealingLR(
-            optimizer=transformer_optimizer,
+        # Create single optimizer with parameter groups
+        optimizer = torch.optim.AdamW([
+            {
+                'params': self.transformer.parameters(),
+                'lr': self.cfg_optimizer.lr,
+                'weight_decay': self.cfg_optimizer.weight_decay
+            },
+            {
+                'params': self.audio_encoder.parameters(), 
+                'lr': self.cfg_optimizer.lr,  # Could use different LR: lr * 0.1
+                'weight_decay': self.cfg_optimizer.weight_decay
+            }
+        ], betas=(0.9, 0.95))
+    
+        # Single scheduler for the combined optimizer
+        scheduler = LinearWarmupCosineAnnealingLR(
+            optimizer=optimizer,
             warmup_steps=self.cfg_optimizer.warmup_steps,
             max_steps=self.cfg_optimizer.max_steps
         )
-        
-        # Maybe shorter warmup for audio encoder
-        audio_scheduler = LinearWarmupCosineAnnealingLR(
-            optimizer=audio_optimizer,
-            warmup_steps=self.cfg_optimizer.warmup_steps, # // 2,  # Shorter warmup
-            max_steps=self.cfg_optimizer.max_steps
-        )
-        
-        return [transformer_optimizer, audio_optimizer], [
-            {
-                "scheduler": transformer_scheduler,
-                "interval": "step",
-                "frequency": 1
+    
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+            "scheduler": scheduler,
+            "interval": "step",
+            "frequency": 1
             },
-            {
-                "scheduler": audio_scheduler,
-                "interval": "step",
-                "frequency": 1
-            }
-        ]
+        }
+
 
     def on_train_epoch_end(self):
         # Reset metrics at the end of each epoch
