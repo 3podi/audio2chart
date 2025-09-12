@@ -1,0 +1,8 @@
+defaults:
+  - default.yaml
+  - model: audio_transformer
+  - _self_
+
+data_split_folder: null
+
+tags: [audio]

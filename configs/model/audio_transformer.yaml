@@ -1,0 +1,12 @@
+name: AUDIO
+
+#Transformer config
+d_model: 256
+n_heads: 2
+n_layers: 4
+d_ff: 1024
+max_seq_len: 256
+max_audio_len: 5000
+dropout: 0.0
+conditional: true
+use_flash: true
