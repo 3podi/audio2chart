@@ -111,7 +111,7 @@ class DecoderBlockCrossAttention(nn.Module):
         )
         
         # Feed forward
-        x = x + self.dropout(self.ff(self.norm3(x)))
+        x = x + self.dropout(self.feed_forward(self.norm3(x)))
         return x
     
 
@@ -184,23 +184,30 @@ class TransformerDecoderAudioConditioned(nn.Module):
         """
 
         # Process audio
-        input_audio = input_audio.permute(0, 2, 1)
-        x = self.adapter(input_audio) 
+        #input_audio = input_audio.permute(0, 2, 1)
+        #input_audio = self.adapter(input_audio) 
+        print('input audio shape iniziale: ', input_audio.shape)
         input_audio = self.audio_positional_encoding(input_audio.permute(0, 2, 1))
+        print('input_audio shape after positional: ', input_audio.shape)
 
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
         
         # Token embeddings and positional encoding
+        print('x shape: ', input_ids.shape)
         x = self.token_embedding(input_ids)
+        print('x shape after token embed: ', x.shape)
         x = self.positional_encoding(x)
+        print('x shape after pos enc: ', x.shape)
 
         if self.conditional:
             assert class_ids is not None, "class_idx must be provided for conditional transformer"
             # Embed the class index and add to the input
-            x = x + self.cond_embedding(class_ids).unsqueeze(1)
+            #print(self.cond_embedding(class_ids).unsqueeze(1).shape)
+            x = x + self.cond_embedding(class_ids)
         
+        print('shape input ids: ', x.shape)
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
@@ -523,7 +530,7 @@ class WaveformTransformer(L.LightningModule):
     def training_step(self, batch, batch_idx):
         
         audio = batch.get('audio', None)
-        audio = torch.randn(2, 1, 2048, device=self.device, dtype=torch.float32)
+        #audio = torch.randn(2, 1, 2048, device=self.device, dtype=torch.float32)
         #audio_mask = batch.get('audio_mask', None)
         x = batch.get('note_values', None)
         #x_t = batch.get('note_times', None)
@@ -532,17 +539,18 @@ class WaveformTransformer(L.LightningModule):
         class_ids = batch.get('cond_diff', None)
         
         assert audio.device == next(self.parameters()).device, "Device mismatch!"
-        print("Audio dtype:", audio.dtype)  # Should be torch.float32
-        print("Model dtype:", next(self.parameters()).dtype)  # Should be torch.float32
+        #print("Audio dtype:", audio.dtype)  # Should be torch.float32
+        #print("Model dtype:", next(self.parameters()).dtype)  # Should be torch.float32
         
-        print(dict(self.named_parameters()).keys())
+        #print(dict(self.named_parameters()).keys())
        
-        print('\n printing next params')
-        print(next(self.audio_encoder.parameters()).device)
+        #print('\n printing next params')
+        #print(next(self.audio_encoder.parameters()).device)
 
 
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
+        mask = mask[:, :-1].contiguous()
         #x_t = x_t[:,1:].contiguous()
         #x_dt = x_dt[:,1:].contiguous()
        
@@ -560,8 +568,11 @@ class WaveformTransformer(L.LightningModule):
         print('about to encode')
         self.audio_encoder = self.audio_encoder
         audio_encoded = self.audio_encoder(audio.contiguous())
-        print('audio encoded: ', audio_encoded)
-        print('encoded with shape: ', audio_encoded.shape)
+        #print('audio encoded: ', audio_encoded)
+        #print('encoded with shape: ', audio_encoded.shape)
+        #print('decoder attention mask shape before transformer forward: ', mask.shape)
+        #print('batch 0 decodet attn mask: ', mask[0])
+        #print('batch 1 decoder attn mask: ', mask[1])
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
         
         logits_flat = logits.reshape(-1, self.vocab_size)
@@ -586,7 +597,7 @@ class WaveformTransformer(L.LightningModule):
                 # Expand class_ids to match flattened logits dimensions
                 # class_ids: [batch_size] -> [batch_size * seq_len]
                 seq_len = target_tokens.shape[1]
-                class_ids_expanded = class_ids.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+                class_ids_expanded = class_ids.expand(-1, seq_len).reshape(-1)
                 
                 # First filter out ignored tokens globally
                 valid_mask = targets_flat != (self.vocab_size - 1)
