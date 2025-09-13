@@ -1,6 +1,6 @@
 #Data Config
 root_folder: ../dataset
-batch_size: 1
+batch_size: 2
 validation_split: 0.8
 diff_list: 
   - Expert
@@ -23,7 +23,7 @@ optimizer:
 #Trainer
 max_epochs: 200
 gpus: 1
-precision: 'bf16-mixed'
+precision: 'bf16'
 
 
 #Wandb

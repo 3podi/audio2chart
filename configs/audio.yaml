@@ -4,6 +4,6 @@ defaults:
   - _self_
 
 data_split_folder: ../dataset
-window_seconds: 30 
+window_seconds: 1 
 
 tags: [audio]

@@ -2,14 +2,14 @@ import os
 from torch.utils.data import Dataset, DataLoader
 import torch
 import torchaudio
-import librosa
+##import librosa
 
 import random
 from typing import Dict, Union, List, Optional
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
-torchaudio.set_audio_backend("sox_io")
+#torchaudio.set_audio_backend("sox_io")
 
 DIFFICULTIES = ['Expert', 'Hard', 'Medium', 'Easy']
 INSTRUMENTS = ['Single']
@@ -323,9 +323,15 @@ class WaveformDataset(Dataset):
             note_times, note_values, note_durations = [], [], []
 
         if self.conditional:
+            #print('target_section: ', target_section)
             diff = [
-                mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in target_section
+                mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in target_section[0]
             ]
+            #print('diff in load item: ', diff)
+
+            #for diff, mapped_diff in DIFF_MAPPING.items():
+                
+            #    print('condition output: ', )
         else:
             diff = [-1]
         
@@ -466,7 +472,7 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         note_durations = sample["note_durations"]
         note_values = sample["note_values"]
         diff = sample["cond_diff"]
-
+        
         # add BOS/EOS + placeholders values 
         note_times = [0.0] + note_times + [1.0]
         note_durations = [0.0] + note_durations + [0.0]
@@ -499,6 +505,7 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         batch_diff.append(diff)
 
     # convert to tensors
+    #batch_audio = torch.tensor(batch_audio, dtype=torch.float)
     batch_note_values = torch.tensor(batch_note_values, dtype=torch.long)
     batch_note_times = torch.tensor(batch_note_times, dtype=torch.float)
     batch_note_durations = torch.tensor(batch_note_durations, dtype=torch.float)
@@ -507,9 +514,9 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         batch_diff = torch.tensor(batch_diff, dtype=torch.long)
     else:
         batch_diff = None  # No diff for unconditional case
-
+    
     return {
-        "audio": batch_audio,
+        "audio": torch.stack(batch_audio, dim=0).float(), #.to(torch.float),
         #"audio_mask": batch_audio_mask,
         "note_values": batch_note_values,
         #"note_times": batch_note_times,

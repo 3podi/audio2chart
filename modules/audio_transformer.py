@@ -1,5 +1,5 @@
 from modules.text_transformer import MultiHeadAttention, FeedForward, PositionalEncoding
-from modules.audio_compression import SEANetEncoder
+from modules.audio_compression import SEANetEncoder2d
 #from transformers import EncodecModel
 import torch
 import torch.nn as nn
@@ -507,7 +507,7 @@ class WaveformTransformer(L.LightningModule):
         )
 
         # Audio encoder
-        self.audio_encoder = SEANetEncoder()
+        self.audio_encoder = SEANetEncoder2d()
 
         # Optimizer
         self.cfg_optimizer = cfg_optimizer
@@ -516,12 +516,14 @@ class WaveformTransformer(L.LightningModule):
         self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
         self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
         
+        #self = self.to(torch.bfloat16)  # Convert model to bfloat16
         # For perplexity calculation
         self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
         
         audio = batch.get('audio', None)
+        audio = torch.randn(2, 1, 2048, device=self.device, dtype=torch.float32)
         #audio_mask = batch.get('audio_mask', None)
         x = batch.get('note_values', None)
         #x_t = batch.get('note_times', None)
@@ -529,19 +531,44 @@ class WaveformTransformer(L.LightningModule):
         mask = batch.get('attention_mask', None)
         class_ids = batch.get('cond_diff', None)
         
+        assert audio.device == next(self.parameters()).device, "Device mismatch!"
+        print("Audio dtype:", audio.dtype)  # Should be torch.float32
+        print("Model dtype:", next(self.parameters()).dtype)  # Should be torch.float32
+        
+        print(dict(self.named_parameters()).keys())
+       
+        print('\n printing next params')
+        print(next(self.audio_encoder.parameters()).device)
+
+
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
         #x_t = x_t[:,1:].contiguous()
         #x_dt = x_dt[:,1:].contiguous()
-        
+       
+
+        assert not torch.isnan(audio).any(), "NaN in audio"
+        assert not torch.isinf(audio).any(), "Inf in audio"
+        assert not torch.isnan(x).any(), "NaN in"
+
+
+        print('audio shape: ', audio.shape)
+        print('notes values shape: ', x.shape)
+        print('conditional diff: ', class_ids.shape)
+
         # Forward pass
-        audio_encoded = self.audio_encoder(audio).unsqueeze(1)
+        print('about to encode')
+        self.audio_encoder = self.audio_encoder
+        audio_encoded = self.audio_encoder(audio.contiguous())
+        print('audio encoded: ', audio_encoded)
+        print('encoded with shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
         
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
         
         # Compute loss
+        print('About to compute loss.')
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
         
         preds = torch.argmax(logits_flat, dim=-1)
