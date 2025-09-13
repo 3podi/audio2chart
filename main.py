@@ -3,7 +3,8 @@ from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
 import random
 
-from dataloader.audio_loader2 import create_audio_chart_dataloader
+#from dataloader.audio_loader2 import create_audio_chart_dataloader
+from dataloader.audio_loader3 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
 from modules.audio_transformer import WaveformTransformer
 
@@ -97,7 +98,7 @@ def main(config: DictConfig):
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
-        audio_processor=audio_processor,
+        #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
@@ -109,7 +110,7 @@ def main(config: DictConfig):
 
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
-        audio_processor=audio_processor,
+        #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
@@ -117,7 +118,7 @@ def main(config: DictConfig):
         batch_size=config.batch_size,
         max_length=config.max_length,
         conditional=config.model.conditional,
-        shuffle=False
+        #shuffle=False
     )
     
     print('Length train dataloader: ', len(train_dataloader))
