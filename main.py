@@ -3,7 +3,7 @@ from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
 import random
 
-from dataloader.audio_loader import create_audio_chart_dataloader
+from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
 from modules.audio_transformer import WaveformTransformer
 
@@ -119,6 +119,9 @@ def main(config: DictConfig):
         conditional=config.model.conditional,
         shuffle=False
     )
+    
+    print('Length train dataloader: ', len(train_dataloader))
+    print('Length val dataloader: ', len(val_dataloader))
 
     # Model
     model = WaveformTransformer(

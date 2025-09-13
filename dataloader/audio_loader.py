@@ -368,7 +368,7 @@ def create_audio_chart_dataloader(
         instruments: List[str] = ['Single'],
         batch_size: int = 32,
         max_length: int = 512,
-        num_workers: int = 0,
+        num_workers: int = 8,
         shuffle: bool = True,
         conditional: bool = False,
         vocab = None

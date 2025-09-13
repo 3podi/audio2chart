@@ -186,20 +186,20 @@ class TransformerDecoderAudioConditioned(nn.Module):
         # Process audio
         #input_audio = input_audio.permute(0, 2, 1)
         #input_audio = self.adapter(input_audio) 
-        print('input audio shape iniziale: ', input_audio.shape)
+        #print('input audio shape iniziale: ', input_audio.shape)
         input_audio = self.audio_positional_encoding(input_audio.permute(0, 2, 1))
-        print('input_audio shape after positional: ', input_audio.shape)
+        #print('input_audio shape after positional: ', input_audio.shape)
 
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
         
         # Token embeddings and positional encoding
-        print('x shape: ', input_ids.shape)
+        #print('x shape: ', input_ids.shape)
         x = self.token_embedding(input_ids)
-        print('x shape after token embed: ', x.shape)
+        #print('x shape after token embed: ', x.shape)
         x = self.positional_encoding(x)
-        print('x shape after pos enc: ', x.shape)
+        #print('x shape after pos enc: ', x.shape)
 
         if self.conditional:
             assert class_ids is not None, "class_idx must be provided for conditional transformer"
@@ -207,7 +207,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             #print(self.cond_embedding(class_ids).unsqueeze(1).shape)
             x = x + self.cond_embedding(class_ids)
         
-        print('shape input ids: ', x.shape)
+        #print('shape input ids: ', x.shape)
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
@@ -560,13 +560,13 @@ class WaveformTransformer(L.LightningModule):
         assert not torch.isnan(x).any(), "NaN in"
 
 
-        print('audio shape: ', audio.shape)
-        print('notes values shape: ', x.shape)
-        print('conditional diff: ', class_ids.shape)
+        #print('audio shape: ', audio.shape)
+        #print('notes values shape: ', x.shape)
+        #print('conditional diff: ', class_ids.shape)
 
         # Forward pass
-        print('about to encode')
-        self.audio_encoder = self.audio_encoder
+        #print('about to encode')
+        #self.audio_encoder = self.audio_encoder
         audio_encoded = self.audio_encoder(audio.contiguous())
         #print('audio encoded: ', audio_encoded)
         #print('encoded with shape: ', audio_encoded.shape)
@@ -579,7 +579,7 @@ class WaveformTransformer(L.LightningModule):
         targets_flat = target_tokens.reshape(-1)
         
         # Compute loss
-        print('About to compute loss.')
+        #print('About to compute loss.')
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
         
         preds = torch.argmax(logits_flat, dim=-1)
@@ -648,11 +648,12 @@ class WaveformTransformer(L.LightningModule):
         
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
+        mask = mask[:, :-1].contiguous()
         #x_t = x_t[:,1:].contiguous()
         #x_dt = x_dt[:,1:].contiguous()
         
         # Forward pass
-        audio_encoded = self.audio_encoder(audio).unsqueeze(1)
+        audio_encoded = self.audio_encoder(audio.contiguous())
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
        
         logits_flat = logits.reshape(-1, self.vocab_size)
@@ -675,7 +676,7 @@ class WaveformTransformer(L.LightningModule):
             # Expand class_ids to match flattened logits dimensions
             # class_ids: [batch_size] -> [batch_size * seq_len]
             seq_len = target_tokens.shape[1]
-            class_ids_expanded = class_ids.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+            class_ids_expanded = class_ids.expand(-1, seq_len).reshape(-1)
             
             # First filter out ignored tokens globally
             valid_mask = targets_flat != (self.vocab_size - 1)

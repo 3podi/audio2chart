@@ -1,6 +1,6 @@
 #Data Config
 root_folder: ../dataset
-batch_size: 2
+batch_size: 4
 validation_split: 0.2
 diff_list: 
   - Expert

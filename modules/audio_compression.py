@@ -143,7 +143,7 @@ class SEANetEncoder2d(nn.Module):
         self,
         in_channels=1,
         base_channels=32,
-        dimension=128,
+        dimension=256,
         n_residual_layers=3,
         ratios=[8, 5, 4, 2],   # stride per block
         kernel_size=7,
