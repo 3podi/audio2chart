@@ -4,7 +4,7 @@ from datetime import datetime
 import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
-from dataloader.audio_loader4 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
+from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
 from modules.audio_transformer import WaveformTransformer
 
