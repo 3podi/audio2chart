@@ -441,62 +441,65 @@ class AudioChartCollator:
         self.max_length = max_length
         self.conditional = conditional
 
-        # Compile collate if PyTorch >= 2.1
+        # Define the core logic as a separate method
+        def _collate_batch_impl(batch: List[List[Dict]]) -> Dict:
+            flat_batch = [sample for sublist in batch for sample in sublist]
+            if not flat_batch:
+                return {}
+
+            max_batch_len = min(
+                max(len(sample["note_values"]) for sample in flat_batch) + 2,
+                self.max_length
+            )
+
+            batch_audio, batch_note_values, batch_note_times, batch_note_durations = [], [], [], []
+            attention_masks, batch_diff = [], []
+
+            for sample in flat_batch:
+                audio = sample['audio']
+                note_times = [0.0] + sample["note_times"] + [1.0]
+                note_durations = [0.0] + sample["note_durations"] + [0.0]
+                note_values = [self.bos_token] + sample["note_values"] + [self.eos_token]
+
+                note_times = note_times[:max_batch_len]
+                note_durations = note_durations[:max_batch_len]
+                note_values = note_values[:max_batch_len]
+
+                seq_len = len(note_values)
+                pad_len = max_batch_len - seq_len
+
+                padded_values = note_values + [self.pad_token] * pad_len
+                padded_times = note_times + [0.0] * pad_len
+                padded_durations = note_durations + [0.0] * pad_len
+
+                attn_len = seq_len - 1
+                attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
+
+                batch_audio.append(audio)
+                batch_note_values.append(padded_values)
+                batch_note_times.append(padded_times)
+                batch_note_durations.append(padded_durations)
+                attention_masks.append(attention_mask)
+                batch_diff.append(sample["cond_diff"])
+
+            return {
+                "audio": torch.stack(batch_audio, dim=0).float(),
+                "note_values": torch.tensor(batch_note_values, dtype=torch.long),
+                "note_times": torch.tensor(batch_note_times, dtype=torch.float),
+                "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
+                "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+                "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if self.conditional else None,
+            }
+
+        # Compile if possible
         if torch.__version__ >= "2.1":
-            self._collate_batch_compiled = torch.compile(self._collate_batch, mode="reduce-overhead")
-            self.__call__ = self._collate_batch_compiled
+            self._collate_batch_compiled = torch.compile(_collate_batch_impl, mode="reduce-overhead")
+            self._collate_fn = self._collate_batch_compiled
         else:
-            self.__call__ = self._collate_batch
+            self._collate_fn = _collate_batch_impl
 
-    def _collate_batch(self, batch: List[List[Dict]]) -> Dict:
-        # Flatten batch: list of lists -> list
-        flat_batch = [sample for sublist in batch for sample in sublist]
-        if not flat_batch:
-            return {}
-
-        max_batch_len = min(
-            max(len(sample["note_values"]) for sample in flat_batch) + 2,
-            self.max_length
-        )
-
-        batch_audio, batch_note_values, batch_note_times, batch_note_durations = [], [], [], []
-        attention_masks, batch_diff = [], []
-
-        for sample in flat_batch:
-            audio = sample['audio']
-            note_times = [0.0] + sample["note_times"] + [1.0]
-            note_durations = [0.0] + sample["note_durations"] + [0.0]
-            note_values = [self.bos_token] + sample["note_values"] + [self.eos_token]
-
-            note_times = note_times[:max_batch_len]
-            note_durations = note_durations[:max_batch_len]
-            note_values = note_values[:max_batch_len]
-
-            seq_len = len(note_values)
-            pad_len = max_batch_len - seq_len
-
-            padded_values = note_values + [self.pad_token] * pad_len
-            padded_times = note_times + [0.0] * pad_len
-            padded_durations = note_durations + [0.0] * pad_len
-
-            attn_len = seq_len - 1
-            attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
-
-            batch_audio.append(audio)
-            batch_note_values.append(padded_values)
-            batch_note_times.append(padded_times)
-            batch_note_durations.append(padded_durations)
-            attention_masks.append(attention_mask)
-            batch_diff.append(sample["cond_diff"])
-
-        return {
-            "audio": torch.stack(batch_audio, dim=0).float(),
-            "note_values": torch.tensor(batch_note_values, dtype=torch.long),
-            "note_times": torch.tensor(batch_note_times, dtype=torch.float),
-            "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
-            "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
-            "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if self.conditional else None,
-        }
+    def __call__(self, batch: List[List[Dict]]) -> Dict:
+        return self._collate_fn(batch)
 
 
 # --------------------
