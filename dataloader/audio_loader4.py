@@ -471,12 +471,12 @@ def create_chunked_audio_chart_dataloader(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,  # Now safe to shuffle since items are pre-built
+        shuffle=False,  # Now safe to shuffle since items are pre-built
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=collator,
         drop_last=True,
         persistent_workers=True if num_workers > 0 else False,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
     return dataloader, vocab
