@@ -20,6 +20,8 @@ from chart.chart_processor import ChartProcessor
 
 import json
 
+MAX_NOTES = 5000
+
 
 def validate_dataset(data, difficulties, instruments):
     valid_items = []
@@ -39,7 +41,7 @@ def validate_dataset(data, difficulties, instruments):
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
 
-            if len(notes) > 0:
+            if len(notes) > 0 and len(notes) < MAX_NOTES:
                 valid_items.append(item)
         except Exception as e:
             print(f"Skipping invalid chart: {item['chart_path']} - {e}")
