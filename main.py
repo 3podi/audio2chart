@@ -5,7 +5,7 @@ import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
-from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
+from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
 from modules.audio_transformer import WaveformTransformer
 
 import lightning as L
@@ -100,16 +100,16 @@ def main(config: DictConfig):
         with open(f"{config.data_split_folder}/val.json", "r", encoding="utf-8") as f:
             val_files = json.load(f) 
     else:
-        find_audio_files(
-            root=config.root_folder,
-            difficulties=list(config.diff_list),
-            instruments=list(config.inst_list),
-            output_json=f"{config.root_folder}/audio_dataset.json",
-            skipped_json=f"{config.root_folder}/audio_skipped.json",
-        )
+        #find_audio_files(
+        #    root=config.root_folder,
+        #    difficulties=list(config.diff_list),
+        #    instruments=list(config.inst_list),
+        #    output_json=f"{config.root_folder}/audio_dataset.json",
+        #    skipped_json=f"{config.root_folder}/audio_skipped.json",
+        #)
 
-        split_json_entries_by_audio(
-            input_json=f"{config.root_folder}/audio_dataset.json",
+        split_json_entries_by_audio_raw(
+            input_json=f"{config.root_folder}/audio_dataset_raw.json",
             train_json=f"{config.root_folder}/train.json",
             val_json=f"{config.root_folder}/val.json",
             val_ratio=config.validation_split,
@@ -129,6 +129,7 @@ def main(config: DictConfig):
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
+        tokenizer=tokenizer,
         #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
@@ -137,10 +138,12 @@ def main(config: DictConfig):
         batch_size=config.batch_size,
         max_length=config.max_length,
         conditional=config.model.conditional,
+        use_predecoded_raw=True,
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
+        tokenizer=tokenizer,
         #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
@@ -149,6 +152,7 @@ def main(config: DictConfig):
         batch_size=config.batch_size,
         max_length=config.max_length,
         conditional=config.model.conditional,
+        use_predecoded_raw=True,
         #shuffle=False
     )
     

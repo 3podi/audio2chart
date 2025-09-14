@@ -62,24 +62,18 @@ def load_opus_ffmpeg(path: str, target_sr: int = 16000, timeout_seconds: int = 1
     except Exception as e:
         raise RuntimeError(f"Failed to load {path} with ffmpeg: {e}")
 
-def load_raw_audio(path: str, length_samples: int, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
+def load_raw_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
     """
-    Load pre-decoded raw 16-bit PCM audio (no header).
+    Load the ENTIRE pre-decoded raw 16-bit PCM audio (no header).
     Must be preprocessed with ffmpeg: ffmpeg -i input.opus -f s16le -ar 16000 -ac 1 output.raw
+    Returns: [1, T] tensor, sample_rate
     """
     try:
         with open(path, 'rb') as f:
             buf = f.read()
         audio_np = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
-
-        if len(audio_np) > length_samples:
-            audio_np = audio_np[:length_samples]
-        elif len(audio_np) < length_samples:
-            audio_np = np.pad(audio_np, (0, length_samples - len(audio_np)))
-
         waveform = torch.from_numpy(audio_np).unsqueeze(0)  # [1, T]
         return waveform, target_sr
-
     except Exception as e:
         raise RuntimeError(f"Failed to load raw audio {path}: {e}")
 
@@ -111,10 +105,10 @@ class ChunkedWaveformDataset(Dataset):
         shuffle_chunks: bool = True,
         conditional: bool = False,
         augment: bool = False,
-        use_predecoded_raw: bool = False,        # 🚀 OPTIMIZATION: Use pre-decoded .raw files
-        precomputed_windows: bool = False,       # 🚀 OPTIMIZATION: Precompute fixed windows
-        decode_to_raw_on_init: bool = False,     # 🚀 OPTIONAL: Auto-convert .opus to .raw during init (for dev)
-        raw_dir: str = "raw_audio",              # Where to store .raw files if auto-converting
+        use_predecoded_raw: bool = False,        
+        precomputed_windows: bool = False,       
+        decode_to_raw_on_init: bool = False,     
+        raw_dir: str = "raw_audio",              # where to store when converting
     ):
         self.data = data
         self.bos_token = bos_token
@@ -285,7 +279,7 @@ class ChunkedWaveformDataset(Dataset):
         try:
             if self.use_predecoded_raw:
                 # Must have 'length_samples' in item metadata
-                waveform, sr = load_raw_audio(audio_path, self.num_samples * 10, self.sample_rate)  # load longer buffer
+                waveform, sr = load_raw_audio(audio_path, self.sample_rate)  # load longer buffer
             else:
                 waveform, sr = load_opus_ffmpeg(audio_path, self.sample_rate, timeout_seconds=20)
 
@@ -525,6 +519,7 @@ class AudioChartCollator:
 
     def __call__(self, batch: List[List[Dict]]) -> Dict:
         return self._collate_fn(batch, *self._args)
+    
 # --------------------
 # Dataloader Factory
 # --------------------
