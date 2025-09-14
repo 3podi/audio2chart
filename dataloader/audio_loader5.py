@@ -1,3 +1,5 @@
+import torch.multiprocessing as mp
+mp.set_start_method('spawn', force=True)
 import os
 import random
 import warnings
@@ -25,32 +27,40 @@ DIFF_MAPPING = {
 # --------------------
 
 def load_opus_ffmpeg(path: str, target_sr: int = 16000, timeout_seconds: int = 10) -> Tuple[torch.Tensor, int]:
-    """
-    Decode .opus using ffmpeg → raw 16-bit PCM → torch tensor [1, T]
-    Much faster than librosa for OPUS.
-    """
     cmd = [
         'ffmpeg',
         '-i', path,
         '-f', 's16le',
-        '-acodec', 'pcm_s16le',
         '-ar', str(target_sr),
         '-ac', '1',
         '-'
     ]
 
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds)
-        if proc.returncode != 0:
-            raise RuntimeError(f"FFMPEG failed with code {proc.returncode} for {path}")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=10**8  # Large buffer to prevent pipe stalls
+        )
 
-        audio_np = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-        waveform = torch.from_numpy(audio_np).unsqueeze(0)  # [1, T]
+        # Use communicate() with timeout — this is safer than run()
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"FFMPEG failed with code {proc.returncode} for {path}: {stderr.decode()}")
+
+        audio_np = np.frombuffer(stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        waveform = torch.from_numpy(audio_np).unsqueeze(0)
         return waveform, target_sr
+
+    except subprocess.TimeoutExpired:
+        proc.kill()  # Explicitly kill if timeout
+        proc.wait()  # Wait for cleanup
+        raise RuntimeError(f"FFMPEG timed out after {timeout_seconds}s for {path}")
 
     except Exception as e:
         raise RuntimeError(f"Failed to load {path} with ffmpeg: {e}")
-
 
 def load_raw_audio(path: str, length_samples: int, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
     """
@@ -301,8 +311,20 @@ class ChunkedWaveformDataset(Dataset):
         return waveform
 
     def _process_window(self, waveform: torch.Tensor, item: Dict, start_sample: int, end_sample: int) -> Dict:
-        # Extract window
-        chunk = waveform[:, start_sample:end_sample]  # view, no clone yet
+        # Extract window (may be shorter than self.num_samples if file is short)
+        chunk = waveform[:, start_sample:end_sample]  # Shape: [1, T], T <= self.num_samples
+
+        actual_len = chunk.shape[-1]
+        if actual_len < self.num_samples:
+            # Pad with silence at the end
+            pad_amount = self.num_samples - actual_len
+            chunk = torch.nn.functional.pad(chunk, (0, pad_amount), mode='constant', value=0.0)
+        elif actual_len > self.num_samples:
+            # Shouldn't happen due to max_start logic, but just in case
+            chunk = chunk[:, :self.num_samples]
+
+        # Now chunk is guaranteed to be [1, self.num_samples]
+        assert chunk.shape[-1] == self.num_samples, f"Chunk shape {chunk.shape} != {self.num_samples}"
 
         if self.augment:
             chunk = chunk.clone()  # only clone when augmenting
@@ -344,13 +366,15 @@ class ChunkedWaveformDataset(Dataset):
 
         except Exception as e:
             print(f"Worker {self._get_worker_id()}: Chart processing failed: {e}")
+            # Still return fixed-size audio tensor
             return {
-                "audio": chunk,
+                "audio": chunk,  # Already padded to [1, self.num_samples]
                 "note_times": [],
                 "note_values": [],
                 "note_durations": [],
                 "cond_diff": [-1],
             }
+
 
     def __len__(self):
         return len(self.items)
@@ -433,6 +457,55 @@ class ChunkedWaveformDataset(Dataset):
 # Optimized Collator (with optional torch.compile)
 # --------------------
 
+def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool) -> Dict:
+    flat_batch = [sample for sublist in batch for sample in sublist]
+    if not flat_batch:
+        return {}
+
+    max_batch_len = min(
+        max(len(sample["note_values"]) for sample in flat_batch) + 2,
+        max_length
+    )
+
+    batch_audio, batch_note_values, batch_note_times, batch_note_durations = [], [], [], []
+    attention_masks, batch_diff = [], []
+
+    for sample in flat_batch:
+        audio = sample['audio']
+        note_times = [0.0] + sample["note_times"] + [1.0]
+        note_durations = [0.0] + sample["note_durations"] + [0.0]
+        note_values = [bos_token] + sample["note_values"] + [eos_token]
+
+        note_times = note_times[:max_batch_len]
+        note_durations = note_durations[:max_batch_len]
+        note_values = note_values[:max_batch_len]
+
+        seq_len = len(note_values)
+        pad_len = max_batch_len - seq_len
+
+        padded_values = note_values + [pad_token] * pad_len
+        padded_times = note_times + [0.0] * pad_len
+        padded_durations = note_durations + [0.0] * pad_len
+
+        attn_len = seq_len - 1
+        attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
+
+        batch_audio.append(audio)
+        batch_note_values.append(padded_values)
+        batch_note_times.append(padded_times)
+        batch_note_durations.append(padded_durations)
+        attention_masks.append(attention_mask)
+        batch_diff.append(sample["cond_diff"])
+
+    return {
+        "audio": torch.stack(batch_audio, dim=0).float(),
+        "note_values": torch.tensor(batch_note_values, dtype=torch.long),
+        "note_times": torch.tensor(batch_note_times, dtype=torch.float),
+        "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
+        "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+        "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
+    }
+
 class AudioChartCollator:
     def __init__(self, bos_token: int, eos_token: int, pad_token: int = -100, max_length: int = 512, conditional: bool = False):
         self.bos_token = bos_token
@@ -441,67 +514,17 @@ class AudioChartCollator:
         self.max_length = max_length
         self.conditional = conditional
 
-        # Define the core logic as a separate method
-        def _collate_batch_impl(batch: List[List[Dict]]) -> Dict:
-            flat_batch = [sample for sublist in batch for sample in sublist]
-            if not flat_batch:
-                return {}
+        # Store args for passing to compiled function
+        self._args = (bos_token, eos_token, pad_token, max_length, conditional)
 
-            max_batch_len = min(
-                max(len(sample["note_values"]) for sample in flat_batch) + 2,
-                self.max_length
-            )
-
-            batch_audio, batch_note_values, batch_note_times, batch_note_durations = [], [], [], []
-            attention_masks, batch_diff = [], []
-
-            for sample in flat_batch:
-                audio = sample['audio']
-                note_times = [0.0] + sample["note_times"] + [1.0]
-                note_durations = [0.0] + sample["note_durations"] + [0.0]
-                note_values = [self.bos_token] + sample["note_values"] + [self.eos_token]
-
-                note_times = note_times[:max_batch_len]
-                note_durations = note_durations[:max_batch_len]
-                note_values = note_values[:max_batch_len]
-
-                seq_len = len(note_values)
-                pad_len = max_batch_len - seq_len
-
-                padded_values = note_values + [self.pad_token] * pad_len
-                padded_times = note_times + [0.0] * pad_len
-                padded_durations = note_durations + [0.0] * pad_len
-
-                attn_len = seq_len - 1
-                attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
-
-                batch_audio.append(audio)
-                batch_note_values.append(padded_values)
-                batch_note_times.append(padded_times)
-                batch_note_durations.append(padded_durations)
-                attention_masks.append(attention_mask)
-                batch_diff.append(sample["cond_diff"])
-
-            return {
-                "audio": torch.stack(batch_audio, dim=0).float(),
-                "note_values": torch.tensor(batch_note_values, dtype=torch.long),
-                "note_times": torch.tensor(batch_note_times, dtype=torch.float),
-                "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
-                "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
-                "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if self.conditional else None,
-            }
-
-        # Compile if possible
-        if torch.__version__ >= "2.1":
-            self._collate_batch_compiled = torch.compile(_collate_batch_impl, mode="reduce-overhead")
-            self._collate_fn = self._collate_batch_compiled
-        else:
-            self._collate_fn = _collate_batch_impl
+        # Compile the top-level function
+        #if torch.__version__ >= "2.1":
+        #    self._collate_fn = torch.compile(_collate_batch_impl, mode="reduce-overhead")
+        #else:
+        self._collate_fn = _collate_batch_impl
 
     def __call__(self, batch: List[List[Dict]]) -> Dict:
-        return self._collate_fn(batch)
-
-
+        return self._collate_fn(batch, *self._args)
 # --------------------
 # Dataloader Factory
 # --------------------
@@ -518,7 +541,7 @@ def create_chunked_audio_chart_dataloader(
     shuffle_chunks: bool = True,
     conditional: bool = False,
     num_pieces: int = 6,
-    max_cache_gb: float = 10.0,
+    max_cache_gb: float = 100.0,
     chunk_size: Optional[int] = None,
     chunk_repeat: int = 1,
     use_predecoded_raw: bool = False,
