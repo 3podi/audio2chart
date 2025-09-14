@@ -3,7 +3,7 @@ defaults:
   - model: audio_transformer
   - _self_
 
-data_split_folder: ../dataset
+data_split_folder: null
 window_seconds: 30
 
 tags: [audio]

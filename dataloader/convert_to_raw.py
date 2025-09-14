@@ -179,6 +179,8 @@ def convert_all_to_raw(
 
     # Update entries with raw_path and length_samples
     updated_entries = []
+    failed_entries = []
+
     for entry in entries:
         audio_path = entry["audio_path"]
         if audio_path in converted:
@@ -188,10 +190,16 @@ def convert_all_to_raw(
             new_entry["length_samples"] = meta["length_samples"]
             updated_entries.append(new_entry)
         else:
-            # Skip if conversion failed
-            pass
+            failed_entries.append(entry)
 
-    # Save updated dataset
+    # Log failures
+    if failed_entries:
+        fail_json = input_json.replace(".json", "_conversion_failed.json")
+        with open(fail_json, "w", encoding="utf-8") as f:
+            json.dump(failed_entries, f, indent=2)
+        print(f"⚠️  {len(failed_entries)} entries failed to convert -> saved to {fail_json}")
+
+    # Save only successful ones
     output_json = input_json.replace(".json", "_with_raw.json")
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(updated_entries, f, indent=2)

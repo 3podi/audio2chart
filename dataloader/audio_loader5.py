@@ -71,6 +71,10 @@ def load_raw_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int
     try:
         with open(path, 'rb') as f:
             buf = f.read()
+        original_size = len(buf)
+        #if original_size % 2 != 0:
+           # print(f"Warning: {path} has {original_size} bytes (not multiple of 2), trimming last byte")
+        #    buf = buf[:-1]
         audio_np = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
         waveform = torch.from_numpy(audio_np).unsqueeze(0)  # [1, T]
         return waveform, target_sr
@@ -383,7 +387,7 @@ class ChunkedWaveformDataset(Dataset):
                 self._should_clear_cache(chunk_id)
 
                 # Load audio
-                waveform, sr = self._load_audio_file(item["audio_path"])
+                waveform, sr = self._load_audio_file(item["raw_path"])
 
                 if waveform.shape[0] > 1:
                     waveform = waveform.mean(dim=0, keepdim=True)

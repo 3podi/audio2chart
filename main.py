@@ -109,7 +109,7 @@ def main(config: DictConfig):
         #)
 
         split_json_entries_by_audio_raw(
-            input_json=f"{config.root_folder}/audio_dataset_raw.json",
+            input_json=f"{config.root_folder}/audio_dataset_with_raw.json",
             train_json=f"{config.root_folder}/train.json",
             val_json=f"{config.root_folder}/val.json",
             val_ratio=config.validation_split,
@@ -129,7 +129,6 @@ def main(config: DictConfig):
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
-        tokenizer=tokenizer,
         #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
@@ -143,7 +142,6 @@ def main(config: DictConfig):
 
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
-        tokenizer=tokenizer,
         #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
