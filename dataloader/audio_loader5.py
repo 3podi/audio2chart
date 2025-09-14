@@ -22,6 +22,9 @@ DIFF_MAPPING = {
     'Easy': 3
 }
 
+MAX_AUDIO_SAMPLES = 10 * 60 * 16000  # 10 minutes @ 16kHz
+MAX_BYTES = MAX_AUDIO_SAMPLES * 2    # 16-bit = 2 bytes per sample
+
 # --------------------
 # Audio loading (FFMPEG - FASTEST for .opus)
 # --------------------
@@ -70,11 +73,15 @@ def load_raw_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int
     """
     try:
         with open(path, 'rb') as f:
-            buf = f.read()
-        original_size = len(buf)
-        #if original_size % 2 != 0:
-           # print(f"Warning: {path} has {original_size} bytes (not multiple of 2), trimming last byte")
-        #    buf = buf[:-1]
+            file_size = os.path.getsize(path)
+            # If file is smaller than max, read entire file
+            if file_size <= MAX_BYTES:
+                buf = f.read()
+                #if len(buf) % 2 != 0:
+                #    buf = buf[:-1]  # Safety: ensure even byte count (rare)
+            else:
+                # ONLY READ FIRST MAX_BYTES — skip rest, avoid long audio
+                buf = f.read(MAX_BYTES)
         audio_np = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
         waveform = torch.from_numpy(audio_np).unsqueeze(0)  # [1, T]
         return waveform, target_sr
