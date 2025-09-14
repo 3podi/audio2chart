@@ -4,7 +4,7 @@ from datetime import datetime
 import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
-from dataloader.audio_loader3 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
+from dataloader.audio_loader4 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio
 from modules.audio_transformer import WaveformTransformer
 
@@ -16,8 +16,36 @@ import hydra
 
 #from transformers import AutoProcessor, EncodecModel
 from chart.tokenizer import SimpleTokenizerGuitar
+from chart.chart_processor import ChartProcessor
 
 import json
+
+
+def validate_dataset(data, difficulties, instruments):
+    valid_items = []
+    chart_processor = ChartProcessor(difficulties, instruments)
+    tokenizer = SimpleTokenizerGuitar()
+    for item in data:
+        try:
+            #chart_processor = ChartProcessor(difficulties, instruments)
+            chart_processor.read_chart(chart_path=item["chart_path"], target_sections=item["difficulty"])
+            notes = chart_processor.notes[item["difficulty"]]
+            bpm_events = chart_processor.synctrack
+            resolution = int(chart_processor.song_metadata['Resolution'])
+            offset = float(chart_processor.song_metadata['Offset'])
+
+            tokenized_chart = tokenizer.encode(note_list=notes)
+            tokenized_chart = tokenizer.format_seconds(
+                tokenized_chart, bpm_events, resolution=resolution, offset=offset
+            )
+
+            if len(notes) > 0:
+                valid_items.append(item)
+        except Exception as e:
+            print(f"Skipping invalid chart: {item['chart_path']} - {e}")
+    
+    print(f"Filtered dataset: {len(valid_items)}/{len(data)} valid charts")
+    return valid_items
 
 class LogGradientNorm(L.pytorch.callbacks.Callback):
     """
@@ -95,6 +123,9 @@ def main(config: DictConfig):
     #audio_processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
     audio_processor = None
     tokenizer = SimpleTokenizerGuitar()
+    
+    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
+    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
