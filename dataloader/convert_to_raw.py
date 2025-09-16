@@ -11,6 +11,10 @@ import warnings
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from chart.chart_processor import ChartProcessor
+from chart.tokenizer import SimpleTokenizerGuitar
+
+# --- Constant
+MAX_NOTES = 5000
 
 def find_audio_files(
     root,
@@ -22,6 +26,8 @@ def find_audio_files(
     start_time = timeit.default_timer()
 
     processor = ChartProcessor(difficulties, instruments)
+    tokenizer = SimpleTokenizerGuitar()
+
     entries = []
     skipped = []
 
@@ -53,11 +59,32 @@ def find_audio_files(
             processor.read_chart(str(chart_path))
 
             for section, notes in processor.notes.items():
-                entries.append({
-                    "audio_path": str(audio_path),
-                    "chart_path": str(chart_path),
-                    "difficulty": section,
-                })
+                # --- validate charts
+                try:
+                    bpm_events = processor.synctrack
+                    resolution = int(processor.song_metadata['Resolution'])
+                    offset = float(processor.song_metadata['Offset'])
+
+                    tokenized_chart = tokenizer.encode(note_list=notes)
+                    tokenized_chart = tokenizer.format_seconds(
+                        tokenized_chart, bpm_events, resolution=resolution, offset=offset
+                    )
+
+                    if len(notes) > 0 and len(notes) < MAX_NOTES:
+                        entries.append({
+                            "audio_path": str(audio_path),
+                            "chart_path": str(chart_path),
+                            "difficulty": section,
+                            # "synctrack": processor.synctrack,
+                            # "notes": notes,
+                            # "song_metadata": processor.song_metadata,
+                        })
+                except Exception as e:
+                    skipped.append({
+                        "path": dirpath,
+                        "reason": "note_reading_error",
+                        "error": str(e) 
+                    })
 
         except Exception as e:
             skipped.append({
@@ -80,7 +107,6 @@ def find_audio_files(
     print(f"⏱  Processing time: {elapsed:.2f} seconds")
 
     return output_json, skipped_json
-
 
 # --------------------
 # Conversion Logic
