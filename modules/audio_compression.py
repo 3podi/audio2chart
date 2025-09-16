@@ -202,7 +202,6 @@ class SEANetEncoder2d(nn.Module):
         )
 
         self.model = nn.Sequential(*layers)
-        #self.layers = layers
 
     def forward(self, x):
         """
@@ -213,9 +212,6 @@ class SEANetEncoder2d(nn.Module):
         """
         # Add dummy spatial dimension: (B, C, T) -> (B, C, 1, T)
         x = x.unsqueeze(2)
-        #for layer in self.layers:
-        #    print('Running layer: ', layer)
-        #    x = layer(x)
         x = self.model(x)    # (B, D, 1, T_out)
         return x.squeeze(2)  # (B, D, T_out)
 
