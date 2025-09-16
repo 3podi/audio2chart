@@ -298,10 +298,10 @@ class ChunkedWaveformDataset(Dataset):
             return self._audio_cache[audio_path]
         
         # DEBUG
-        worker_id = self._get_worker_id()
-        start_time = time.time()
+        #worker_id = self._get_worker_id()
+        #start_time = time.time()
         # Log every load attempt
-        logger.info(f"Loading audio: {audio_path} (worker={worker_id})", extra={'worker_id': worker_id})
+        #logger.info(f"Loading audio: {audio_path} (worker={worker_id})", extra={'worker_id': worker_id})
 
 
         try:
@@ -313,13 +313,13 @@ class ChunkedWaveformDataset(Dataset):
 
 
             # DEBUG
-            duration = time.time() - start_time
-            sample_count = waveform.shape[-1]
-            logger.info(
-                f"✅ Loaded {os.path.basename(audio_path)} in {duration:.3f}s "
-                f"({sample_count} samples)",
-                extra={'worker_id': worker_id}
-            )
+            #duration = time.time() - start_time
+            #sample_count = waveform.shape[-1]
+            #logger.info(
+            #    f"✅ Loaded {os.path.basename(audio_path)} in {duration:.3f}s "
+            #    f"({sample_count} samples)",
+            #    extra={'worker_id': worker_id}
+            #)
 
             #if len(self._audio_cache) < self.chunk_size * 2:
             #    self._audio_cache[audio_path] = (waveform, sr)
@@ -344,8 +344,8 @@ class ChunkedWaveformDataset(Dataset):
 
     def _process_window(self, waveform: torch.Tensor, item: Dict, start_sample: int, end_sample: int) -> Dict:
 
-        worker_id = self._get_worker_id()
-        logger.info(f"[WORKER {worker_id}] Starting _process_window for {item['raw_path']} @ {start_sample}:{end_sample}", extra={'worker_id': worker_id})
+        #worker_id = self._get_worker_id()
+        #logger.info(f"[WORKER {worker_id}] Starting _process_window for {item['raw_path']} @ {start_sample}:{end_sample}", extra={'worker_id': worker_id})
 
         # Extract window (may be shorter than self.num_samples if file is short)
         chunk = waveform[:, start_sample:end_sample]  # Shape: [1, T], T <= self.num_samples
@@ -366,7 +366,7 @@ class ChunkedWaveformDataset(Dataset):
             chunk = chunk.clone()  # only clone when augmenting
             chunk = self._augment(chunk)
 
-        logger.info(f"[WORKER {worker_id}] Window extracted, now processing chart...", extra={'worker_id': worker_id})
+        #logger.info(f"[WORKER {worker_id}] Window extracted, now processing chart...", extra={'worker_id': worker_id})
 
 
         try:
@@ -375,21 +375,21 @@ class ChunkedWaveformDataset(Dataset):
             if notes is None:
                 raise ValueError("Chart was marked as bad")
 
-            logger.info(f"[WORKER {worker_id}] Got chart cache, encoding notes...", extra={'worker_id': worker_id})
+            #logger.info(f"[WORKER {worker_id}] Got chart cache, encoding notes...", extra={'worker_id': worker_id})
 
             start_seconds = start_sample / self.sample_rate
             end_seconds = end_sample / self.sample_rate
 
             tokenized_chart = self.tokenizer.encode(note_list=notes)
-            logger.info(f"[WORKER {worker_id}] Tokenized {len(tokenized_chart)} notes", extra={'worker_id': worker_id})
+            #logger.info(f"[WORKER {worker_id}] Tokenized {len(tokenized_chart)} notes", extra={'worker_id': worker_id})
             tokenized_chart = self.tokenizer.format_seconds(
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
-            logger.info(f"[WORKER {worker_id}] Formatted seconds, got {len(tokenized_chart)} events", extra={'worker_id': worker_id})
+            #logger.info(f"[WORKER {worker_id}] Formatted seconds, got {len(tokenized_chart)} events", extra={'worker_id': worker_id})
 
 
             filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
-            logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
+            #logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
 
             if filtered:
                 note_times, note_values, note_durations = map(list, zip(*filtered))
