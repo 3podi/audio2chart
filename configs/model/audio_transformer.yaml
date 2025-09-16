@@ -3,8 +3,8 @@ name: AUDIO
 #Seanet encoder config
 encoder:
   in_channels: 1
-  base_channels: 32
-  dimension: 256
+  base_channels: 64
+  dimension: 512
   n_residual_layers: 3
   ratios: [8, 5, 4, 2]         
   kernel_size: 7
@@ -14,10 +14,10 @@ encoder:
 
 #Transformer config
 transformer:
-  d_model: 256
-  n_heads: 2
-  n_layers: 4
-  d_ff: 1024
+  d_model: 512
+  n_heads: 4
+  n_layers: 8
+  d_ff: 2048
   max_seq_len: 256
   max_audio_len: 5000
   dropout: 0.0

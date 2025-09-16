@@ -77,8 +77,8 @@ def main(config: DictConfig):
         f"{config.model.name}_"
         #f"{config.root_folder}_"
         f"seq{config.max_length}_"
-        f"d{config.model.d_model}_"
-        f"n{config.model.n_layers}_"
+        f"d{config.model.transformer.d_model}_"
+        f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
         f"{timestamp}"
@@ -125,8 +125,8 @@ def main(config: DictConfig):
 
     tokenizer = SimpleTokenizerGuitar()
     
-    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
-    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
+    #train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
+    #val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
@@ -136,7 +136,7 @@ def main(config: DictConfig):
         instruments=list(config.inst_list),
         batch_size=config.batch_size,
         max_length=config.max_length,
-        conditional=config.model.conditional,
+        conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
     )
 
@@ -148,7 +148,7 @@ def main(config: DictConfig):
         instruments=list(config.inst_list),
         batch_size=config.batch_size,
         max_length=config.max_length,
-        conditional=config.model.conditional,
+        conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
     )
     

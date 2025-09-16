@@ -61,6 +61,8 @@ def find_audio_files(
             for section, notes in processor.notes.items():
                 # --- validate charts
                 try:
+                    if len(notes) > MAX_NOTES:
+                        raise("Skipping chart for too many notes.")
                     bpm_events = processor.synctrack
                     resolution = int(processor.song_metadata['Resolution'])
                     offset = float(processor.song_metadata['Offset'])
@@ -70,7 +72,7 @@ def find_audio_files(
                         tokenized_chart, bpm_events, resolution=resolution, offset=offset
                     )
 
-                    if len(notes) > 0 and len(notes) < MAX_NOTES:
+                    if len(notes) >0:
                         entries.append({
                             "audio_path": str(audio_path),
                             "chart_path": str(chart_path),
@@ -79,6 +81,8 @@ def find_audio_files(
                             # "notes": notes,
                             # "song_metadata": processor.song_metadata,
                         })
+                    else:
+                        raise("Empty note section.")
                 except Exception as e:
                     skipped.append({
                         "path": dirpath,
