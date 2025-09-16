@@ -122,8 +122,7 @@ def main(config: DictConfig):
         with open(f"{config.root_folder}/val.json", "r", encoding="utf-8") as f:
             val_files = json.load(f) 
 
-    #audio_processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
-    audio_processor = None
+
     tokenizer = SimpleTokenizerGuitar()
     
     train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
@@ -131,7 +130,6 @@ def main(config: DictConfig):
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
-        #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
@@ -144,7 +142,6 @@ def main(config: DictConfig):
 
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
-        #audio_processor=audio_processor,
         window_seconds=config.window_seconds,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
@@ -153,7 +150,6 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.conditional,
         use_predecoded_raw=True,
-        #shuffle=False
     )
     
     print('Length train dataloader: ', len(train_dataloader))
