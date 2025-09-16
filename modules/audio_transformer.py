@@ -502,28 +502,28 @@ class WaveformTransformer(L.LightningModule):
             vocab_size = self.vocab_size,
             pad_token_id = pad_token_id,
             eos_token_id = eos_token_id,
-            d_model = cfg_model.d_model,
-            n_heads = cfg_model.n_heads,
-            n_layers = cfg_model.n_layers,
-            d_ff = cfg_model.d_ff,
-            max_seq_len = cfg_model.max_seq_len,
-            max_audio_len = cfg_model.max_audio_len,
-            dropout = cfg_model.dropout,
-            conditional = cfg_model.conditional,
-            use_flash = cfg_model.use_flash
+            d_model = cfg_model.transformer.d_model,
+            n_heads = cfg_model.transformer.n_heads,
+            n_layers = cfg_model.transformer.n_layers,
+            d_ff = cfg_model.transformer.d_ff,
+            max_seq_len = cfg_model.transformer.max_seq_len,
+            max_audio_len = cfg_model.transformer.max_audio_len,
+            dropout = cfg_model.transformer.dropout,
+            conditional = cfg_model.transformer.conditional,
+            use_flash = cfg_model.transformer.use_flash
         )
 
         # Audio encoder
         self.audio_encoder = SEANetEncoder2d(
-            in_channels = cfg_model.in_channels,
-            base_channels = cfg_model.base_channels,
-            dimension = cfg_model.dimension,
-            n_residual_layers = cfg_model.n_residual_layers,
-            ratios = cfg_model.ratios,         
-            kernel_size = cfg_model.kernel_size,
-            last_kernel_size = cfg_model.last_kernel_size,
-            residual_kernel_size = cfg_model.residual_kernel_size,
-            dilation_base = cfg_model.dilation_base
+            in_channels = cfg_model.encoder.in_channels,
+            base_channels = cfg_model.encoder.base_channels,
+            dimension = cfg_model.encoder.dimension,
+            n_residual_layers = cfg_model.encoder.n_residual_layers,
+            ratios = cfg_model.encoder.ratios,         
+            kernel_size = cfg_model.encoder.kernel_size,
+            last_kernel_size = cfg_model.encoder.last_kernel_size,
+            residual_kernel_size = cfg_model.encoder.residual_kernel_size,
+            dilation_base = cfg_model.encoder.dilation_base
         )
 
         # Optimizer
