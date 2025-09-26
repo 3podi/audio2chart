@@ -2,6 +2,7 @@ name: AUDIO
 
 #Seanet encoder config
 encoder:
+  _target_: modules.models.SEANetEncoder2d
   in_channels: 1
   base_channels: 64
   dimension: 512
@@ -14,6 +15,7 @@ encoder:
 
 #Transformer config
 transformer:
+  _target_: modules.models.TransformerDecoderAudioConditioned
   d_model: 512
   n_heads: 4
   n_layers: 8

@@ -106,9 +106,9 @@ def find_audio_files(
         json.dump(skipped, f, indent=2)
 
     elapsed = timeit.default_timer() - start_time
-    print(f"✅ Saved {len(entries)} entries to {output_json}")
-    print(f"⚠️  Skipped {len(skipped)} folders -> {skipped_json}")
-    print(f"⏱  Processing time: {elapsed:.2f} seconds")
+    print(f"Saved {len(entries)} entries to {output_json}")
+    print(f"Skipped {len(skipped)} folders -> {skipped_json}")
+    print(f"Processing time: {elapsed:.2f} seconds")
 
     return output_json, skipped_json
 
@@ -174,7 +174,7 @@ def convert_all_to_raw(
     Read entries from input_json, convert all audio files to .raw,
     then save an updated JSON with "raw_path" and "length_samples".
     """
-    print(f"🔄 Loading dataset from {input_json}...")
+    print(f"Loading dataset from {input_json}...")
     with open(input_json, "r", encoding="utf-8") as f:
         entries = json.load(f)
 
@@ -182,7 +182,7 @@ def convert_all_to_raw(
     unique_audio_paths = list(set(entry["audio_path"] for entry in entries))
     total = len(unique_audio_paths)
 
-    print(f"🔍 Found {total} unique audio files to convert...")
+    print(f"Found {total} unique audio files to convert...")
 
     # Use ProcessPoolExecutor for true parallelism (ffmpeg is CPU-bound)
     converted = {}
@@ -227,7 +227,7 @@ def convert_all_to_raw(
         fail_json = input_json.replace(".json", "_conversion_failed.json")
         with open(fail_json, "w", encoding="utf-8") as f:
             json.dump(failed_entries, f, indent=2)
-        print(f"⚠️  {len(failed_entries)} entries failed to convert -> saved to {fail_json}")
+        print(f"{len(failed_entries)} entries failed to convert -> saved to {fail_json}")
 
     # Save only successful ones
     output_json = input_json.replace(".json", "_with_raw.json")
@@ -239,11 +239,11 @@ def convert_all_to_raw(
     if errors:
         with open(error_json, "w", encoding="utf-8") as f:
             json.dump(errors, f, indent=2)
-        print(f"⚠️  {len(errors)} conversion errors saved to {error_json}")
+        print(f"{len(errors)} conversion errors saved to {error_json}")
 
-    print(f"✅ Successfully converted {len(converted)} files.")
-    print(f"📊 Saved enhanced dataset to: {output_json}")
-    print(f"ℹ️  Total valid entries: {len(updated_entries)}")
+    print(f"Successfully converted {len(converted)} files.")
+    print(f"Saved enhanced dataset to: {output_json}")
+    print(f"Total valid entries: {len(updated_entries)}")
 
     return output_json
 
@@ -268,7 +268,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Step 1: Find all audio/chart pairs
-    print("🚀 Step 1: Scanning for audio and chart files...")
+    print("Step 1: Scanning for audio and chart files...")
     find_audio_files(
         root=args.root,
         difficulties=args.difficulties,
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     )
 
     # Step 2: Convert all audio files to .raw
-    print("\n🚀 Step 2: Converting audio files to .raw format...")
+    print("\nStep 2: Converting audio files to .raw format...")
     convert_all_to_raw(
         input_json=args.output_json,
         raw_dir=args.raw_dir,
@@ -286,6 +286,6 @@ if __name__ == "__main__":
         max_workers=args.workers
     )
 
-    print("\n🎉 All done! You can now use:")
+    print("\nYou can now use:")
     print(f"   use_predecoded_raw=True, precomputed_windows=False")
     print(f"   in your DataLoader with the new file: {args.output_json.replace('.json', '_with_raw.json')}")
