@@ -232,7 +232,6 @@ class NotesTransformer(L.LightningModule):
 ###############################
 
 
-# TODO: give already instanciated model to the trainer
 class WaveformTransformer(L.LightningModule):
     def __init__(self, vocab_size, pad_token_id, eos_token_id, cfg_model, cfg_optimizer=None):
         super().__init__()
