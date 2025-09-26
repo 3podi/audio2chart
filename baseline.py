@@ -5,7 +5,7 @@ import random
 
 from dataloader.notes_loader import create_chart_dataloader
 from dataloader.utils_dataloader import find_chart_files
-from modules.text_transformer import NotesTransformer
+from modules.trainer import NotesTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
