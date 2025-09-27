@@ -23,5 +23,5 @@ transformer:
   max_seq_len: 256
   max_audio_len: 5000
   dropout: 0.0
-  conditional: true
+  conditional: false
   use_flash: true

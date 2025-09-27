@@ -499,7 +499,7 @@ class ChunkedWaveformDataset(Dataset):
 
 
 # --------------------
-# Optimized Collator (with optional torch.compile)
+# Collator
 # --------------------
 
 def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool) -> Dict:
@@ -701,4 +701,4 @@ if __name__ == "__main__":
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
         list(executor.map(convert_one, opus_files))
 
-    print(f"✅ Conversion complete. Output: {args.output_dir}")
+    print(f"Conversion complete. Output: {args.output_dir}")
