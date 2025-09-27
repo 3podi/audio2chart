@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import lightning as L
 from torchmetrics import Accuracy
 from modules.scheduler import LinearWarmupCosineAnnealingLR
-from modules.transformer_layers import TransformerDecoderOnly
+from modules.models import TransformerDecoderOnly
 from hydra.utils import instantiate
 
 
