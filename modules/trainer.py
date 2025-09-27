@@ -460,7 +460,7 @@ class WaveformTransformer(L.LightningModule):
             },
             {
                 'params': self.audio_encoder.parameters(), 
-                'lr': self.cfg_optimizer.lr,
+                'lr': self.cfg_optimizer.lr_audio,
                 'weight_decay': self.cfg_optimizer.weight_decay
             }
         ], betas=(0.9, 0.95))
