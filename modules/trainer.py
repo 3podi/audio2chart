@@ -247,7 +247,11 @@ class WaveformTransformer(L.LightningModule):
             pad_token_id=self.pad_token_id,
             eos_token_id=self.eos_token_id,
         )
-        self.audio_encoder = instantiate(cfg_model.encoder)
+        self.audio_encoder = instantiate(
+            cfg_model.encoder,
+            vocab_size=vocab_size,
+            pad_token_id=pad_token_id,
+        )
 
         # Optimizer
         self.cfg_optimizer = cfg_optimizer
