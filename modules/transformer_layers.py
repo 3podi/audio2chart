@@ -7,7 +7,7 @@ import inspect
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1, use_flash=False):
+    def __init__(self, d_model, n_heads, dropout=0.1, use_flash=False, is_causal=True):
         super().__init__()
         assert d_model % n_heads == 0
         
@@ -22,6 +22,7 @@ class MultiHeadAttention(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
         self.use_flash = use_flash
+        self.is_causal = is_causal
 
     def forward(self, x, attention_mask=None):
         """
@@ -35,8 +36,13 @@ class MultiHeadAttention(nn.Module):
         K = self.w_k(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
         V = self.w_v(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
 
-        # causal mask (T, T)
-        causal_mask = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))  # (T, T)
+        # Build attention mask
+        if self.is_causal:
+            # Causal mask: only allow attending to past and current tokens
+            causal_mask = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))  # (T, T)
+        else:
+            # No causal masking: full attention allowed
+            causal_mask = torch.ones(T, T, device=x.device, dtype=torch.bool)  # (T, T)
 
         if attention_mask is not None:
             # Only need to mask keys (broadcast over queries & heads)
@@ -75,12 +81,12 @@ class FeedForward(nn.Module):
         
     def forward(self, x):
         return self.linear_out(self.dropout(F.relu(self.linear1(x))))
-
+    
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1, use_flash=False):
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1, use_flash=False, is_causal=True):
         super().__init__()
-        self.self_attn = MultiHeadAttention(d_model, n_heads, dropout, use_flash)
+        self.self_attn = MultiHeadAttention(d_model, n_heads, dropout, use_flash, is_causal)
         self.feed_forward = FeedForward(d_model, d_ff, dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)

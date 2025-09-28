@@ -158,6 +158,8 @@ class SEANetEncoder2d(nn.Module):
     """SEANet encoder for raw audio (Conv2d version)."""
     def __init__(
         self,
+        vocab_size,
+        pad_token_id,
         in_channels=1,
         base_channels=32,
         dimension=256,
@@ -167,6 +169,8 @@ class SEANetEncoder2d(nn.Module):
         last_kernel_size=7,
         residual_kernel_size=3,
         dilation_base=2,
+        use_transformer=False,
+        config_transformer=None
     ):
         super().__init__()
 
@@ -218,6 +222,16 @@ class SEANetEncoder2d(nn.Module):
             )
         )
 
+        # Final Transformer encoder
+        if use_transformer:
+            layers.append(
+                TransformerEncoder(
+                    vocab_size=vocab_size,
+                    pad_token_id=pad_token_id,
+                    **config_transformer
+                )
+            )
+
         self.model = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -268,6 +282,81 @@ class SEANetEncoder2d(nn.Module):
 #                             #
 #                             #
 ###############################
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, vocab_size, pad_token_id, d_model=512, n_heads=8, n_layers=6, 
+                 d_ff=2048, max_seq_len=5000, dropout=0.1, use_flash=False, is_causal=False):
+        super().__init__()
+        
+        self.d_model = d_model
+        self.vocab_size = vocab_size
+        self.pad_token_id = pad_token_id
+        
+        # Token embedding and positional encoding
+        if vocab_size:
+            self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, max_seq_len)
+ 
+        # Decoder layers
+        self.layers = nn.ModuleList([
+            DecoderBlock(d_model, n_heads, d_ff, dropout, use_flash, is_causal) #is_causal=False -> EncoderBlock
+            for _ in range(n_layers)
+        ])
+        
+        # Output projection
+        if vocab_size:
+            self.output_projection = nn.Linear(d_model, vocab_size)
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+        # Special init, gpt2 paper
+        for pn, p in self.named_parameters():
+            if pn.endswith('linear_out.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * n_layers))
+        
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    
+    def create_attention_mask(self, input_ids):
+        """Create attention mask where 1 means attend, 0 means don't attend (pad token)"""
+        return (input_ids != self.pad_token_id).long()
+    
+    def forward(self, input_ids, attention_mask=None, class_ids=None):
+        """
+        Args:
+            input_ids: (batch_size, seq_len) - Token indices or Token embeddings
+            attention_mask: (batch_size, seq_len) - Mask where 1 means attend, 0 means pad token
+        
+        Returns:
+            x: (batch_size, seq_len, vocab_size) - Output logits or Output embedding
+        """
+
+
+        # Create attention mask if not provided
+        if attention_mask is None:
+            attention_mask = self.create_attention_mask(input_ids)
+        
+        # Token embeddings and positional encoding
+        if self.vocab_size:
+            x = self.token_embedding(input_ids)
+        x = self.positional_encoding(x)
+        
+        # Pass through encoder layers
+        for layer in self.layers:
+            x = layer(x, attention_mask)
+        
+        # Output projection to vocabulary
+        if self.vocab_size:
+            x = self.output_projection(x)
+        
+        return x
+
 
 
 class TransformerDecoderOnly(nn.Module):
