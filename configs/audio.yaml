@@ -3,6 +3,11 @@ defaults:
   - model: audio_transformer
   - _self_
 
+
+# Add audio encoder lr
+optimizer:
+  lr_audio: 5e-4
+
 data_split_folder: null
 window_seconds: 30
 
