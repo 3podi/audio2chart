@@ -13,9 +13,22 @@ encoder:
   residual_kernel_size: 3
   dilation_base: 2
 
-#Transformer config
+#Transformer Decocer config
 transformer:
   _target_: modules.models.TransformerDecoderAudioConditioned
+  d_model: 512
+  n_heads: 4
+  n_layers: 8
+  d_ff: 2048
+  max_seq_len: 256
+  max_audio_len: 5000
+  dropout: 0.0
+  conditional: false
+  use_flash: true
+
+#Transformer encoder audio config
+transformer_encoder:
+  d_model: 512
   d_model: 512
   n_heads: 4
   n_layers: 8
