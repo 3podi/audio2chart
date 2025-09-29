@@ -249,7 +249,7 @@ class WaveformTransformer(L.LightningModule):
         )
         self.audio_encoder = instantiate(
             cfg_model.encoder,
-            vocan_size=None,
+            vocab_size=None,
             pad_token_id=pad_token_id,
         )
 
