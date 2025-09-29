@@ -244,7 +244,7 @@ class SEANetEncoder2d(nn.Module):
         # Add dummy spatial dimension: (B, C, T) -> (B, C, 1, T)
         x = x.unsqueeze(2)
         x = self.model(x)    # (B, D, 1, T_out)
-        return x.squeeze(2)  # (B, D, T_out)
+        return x#.squeeze(2)  # (B, D, T_out)
 
     def compute_receptive_field(self, sr=16000):
         """
@@ -339,14 +339,20 @@ class TransformerEncoder(nn.Module):
 
 
         # Create attention mask if not provided
-        if attention_mask is None:
-            attention_mask = self.create_attention_mask(input_ids)
+        #if attention_mask is None and self.vocab_size is None:
+        #    causal_mask = torch.ones(T, T, device=x.device, dtype=torch.bool)
+        #    attention_mask = self.create_attention_mask(input_ids)
         
         # Token embeddings and positional encoding
         if self.vocab_size:
+            if attention_mask is None:
+                attention_mask = self.create_attention_mask(input_ids)
             x = self.token_embedding(input_ids)
         else:
-            x = input_ids
+            x = input_ids.squeeze(2).permute(0,2,1)
+            #if attention_mask is None:
+            #    B, T, _ = x.size()
+            #    attention_mask = torch.ones(B, T, device=x.device, dtype=torch.bool) 
         x = self.positional_encoding(x)
         
         # Pass through encoder layers
@@ -594,9 +600,8 @@ class TransformerDecoderAudioConditioned(nn.Module):
         #input_audio = input_audio.permute(0, 2, 1)
         #input_audio = self.adapter(input_audio) 
         #print('input audio shape iniziale: ', input_audio.shape)
-        input_audio = self.audio_positional_encoding(input_audio.permute(0, 2, 1))
-        #print('input_audio shape after positional: ', input_audio.shape)
-
+        input_audio = self.audio_positional_encoding(input_audio)#.permute(0, 2, 1))
+        
         # Create attention mask if not provided
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids)
