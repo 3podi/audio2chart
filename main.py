@@ -72,6 +72,19 @@ def main(config: DictConfig):
         throw_on_missing=True,
     )
 
+
+    encoder_cfg = config.model.encoder
+
+    # Compact string for ratios
+    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
+
+    # Build run name
+    run_name = (
+        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+        f"_dim{encoder_cfg.dimension}"
+    )
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
         f"{config.model.name}_"
@@ -81,6 +94,7 @@ def main(config: DictConfig):
         f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
+        f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -164,7 +178,9 @@ def main(config: DictConfig):
         cfg_optimizer=config.optimizer
     )
 
-    print(model.audio_encoder.compute_receptive_field())
+    rf = model.audio_encoder.compute_receptive_field()
+    wandb.log({"rf": rf})
+    
 
     # Callbacks
     #checkpoint_cb = L.pytorch.callbacks.ModelCheckpoint(
@@ -175,7 +191,7 @@ def main(config: DictConfig):
     #)
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.001, patience=10, verbose=False, mode="max")
+    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.001, patience=5, verbose=False, mode="max")
     track_grad_norm = LogGradientNorm()
 
     # Trainer

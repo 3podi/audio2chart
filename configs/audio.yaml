@@ -6,7 +6,7 @@ defaults:
 
 # Add audio encoder lr
 optimizer:
-  lr_audio: 5e-4
+  lr_audio: 5e-5
 
 data_split_folder: null
 window_seconds: 30
