@@ -345,6 +345,8 @@ class TransformerEncoder(nn.Module):
         # Token embeddings and positional encoding
         if self.vocab_size:
             x = self.token_embedding(input_ids)
+        else:
+            x = input_ids
         x = self.positional_encoding(x)
         
         # Pass through encoder layers
