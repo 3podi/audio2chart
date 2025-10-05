@@ -91,7 +91,7 @@ def main(config: DictConfig):
         #f"{config.root_folder}_"
         f"seq{config.max_length}_"
         f"d{config.model.transformer.d_model}_"
-        f"n{config.model.transformer.n_layers}_"
+        #f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
         f"{run_name}_"

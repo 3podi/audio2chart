@@ -1,6 +1,6 @@
 defaults:
   - default.yaml
-  - model: audio_transformer
+  - model: audio_transformer2
   - _self_
 
 
