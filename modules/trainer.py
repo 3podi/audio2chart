@@ -240,6 +240,8 @@ class WaveformTransformer(L.LightningModule):
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
 
+        cfg_model['vocab_size'] = self.vocab_size
+
         # Instantiate submodels from config
         self.transformer = instantiate(
             cfg_model.transformer,
