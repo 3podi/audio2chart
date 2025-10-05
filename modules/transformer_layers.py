@@ -421,39 +421,49 @@ def sdpa(Q, K, V, S, sm_scale, sliding_window=0, attention_mask=None):
 class AttentionBlock(torch.nn.Module):
     def __init__(
         self,
-        config,
+        d_model,
+        head_dim,
+        n_heads,
+        num_key_value_heads,
+        sliding_window,
+        apply_sliding,
+        rope_theta,
+        rope_scaling_factor,
+        rope_ntk_alpha,
+        rope_ntk_beta,
+        initial_context_length,
         layer_idx: int = 0,
     ):
         super().__init__()
-        self.head_dim = config.head_dim
-        self.num_attention_heads = config.n_heads
-        self.num_key_value_heads = config.num_key_value_heads
+        self.head_dim = head_dim
+        self.num_attention_heads = n_heads
+        self.num_key_value_heads = num_key_value_heads
         # Only apply sliding window to every other layer
-        self.sliding_window = config.sliding_window if config.apply_sliding and layer_idx % 2 == 0 else 0
+        self.sliding_window = sliding_window if apply_sliding and layer_idx % 2 == 0 else 0
         self.sinks = torch.nn.Parameter(
-            torch.empty(config.n_heads, dtype=torch.bfloat16)
+            torch.empty(n_heads, dtype=torch.bfloat16)
         )
-        self.norm = RMSNorm(config.d_model)
-        qkv_dim = config.head_dim * (
-            config.n_heads + 2 * config.num_key_value_heads
+        self.norm = RMSNorm(d_model)
+        qkv_dim = head_dim * (
+            n_heads + 2 * num_key_value_heads
         )
         self.qkv = torch.nn.Linear(
-            config.d_model, qkv_dim, dtype=torch.bfloat16
+            d_model, qkv_dim, dtype=torch.bfloat16
         )
         self.out = torch.nn.Linear(
-            config.head_dim * config.num_attention_heads,
-            config.d_model,
+            head_dim * self.num_attention_heads,
+            d_model,
             dtype=torch.bfloat16,
         )
-        self.sm_scale = 1 / math.sqrt(config.head_dim)
+        self.sm_scale = 1 / math.sqrt(head_dim)
         self.rope = RotaryEmbedding(
-            config.head_dim,
-            config.rope_theta,
+            head_dim,
+            rope_theta,
             torch.float32,
-            initial_context_length=config.initial_context_length,
-            scaling_factor=config.rope_scaling_factor,
-            ntk_alpha=config.rope_ntk_alpha,
-            ntk_beta=config.rope_ntk_beta,
+            initial_context_length=initial_context_length,
+            scaling_factor=rope_scaling_factor,
+            ntk_alpha=rope_ntk_alpha,
+            ntk_beta=rope_ntk_beta,
         )
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -525,14 +535,44 @@ class TransformerBlock(torch.nn.Module):
     
 
 class DecoderBlockCrossAttention2(nn.Module):
-    def __init__(self, config=None, layer_idx=None):
+    def __init__(
+            self,
+            d_model, 
+            n_heads, 
+            d_ff, 
+            dropout, 
+            head_dim,
+            num_key_value_heads,
+            sliding_window,
+            apply_sliding,
+            rope_theta,
+            rope_scaling_factor,
+            rope_ntk_alpha,
+            rope_ntk_beta,
+            initial_context_length,
+            use_flash=False, 
+            layer_idx=None
+        ):
         super().__init__()
-        self.self_attn = AttentionBlock(config, layer_idx)
-        self.cross_attn = CrossAttention(config.d_model, config.n_heads, config.dropout, config.use_flash)
-        self.feed_forward = FeedForward2(config.d_model, config.d_ff, config.dropout)
+        self.self_attn = AttentionBlock(
+            d_model=d_model,
+            head_dim=head_dim,
+            n_heads=n_heads,
+            num_key_value_heads=num_key_value_heads,
+            sliding_window=sliding_window,
+            apply_sliding=apply_sliding,
+            rope_theta=rope_theta,
+            rope_scaling_factor=rope_scaling_factor,
+            rope_ntk_alpha=rope_ntk_alpha,
+            rope_ntk_beta=rope_ntk_beta,
+            initial_context_length=initial_context_length,
+            layer_idx=layer_idx
+        )
+        self.cross_attn = CrossAttention(d_model, n_heads, dropout, use_flash)
+        self.feed_forward = FeedForward2(d_model, d_ff, dropout)
                 
-        self.norm = RMSNorm(config.d_model)
-        self.dropout = nn.Dropout(config.dropout)
+        self.norm = RMSNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, decoder_input, encoder_output, decoder_mask=None, encoder_mask=None):
         # Self-attention on decoder sequence
@@ -555,29 +595,83 @@ class DecoderBlockCrossAttention2(nn.Module):
 class Transformer(torch.nn.Module):
     def __init__(
         self,
-        config,
-        **kwargs
+        # --- Model dimensions ---
+        d_model: int = 512,
+        head_dim: int = 64,
+        n_heads: int = 8,
+        num_key_value_heads: int = 4,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        # --- Architecture ---
+        num_hidden_layers: int = 8,
+        vocab_size: int = 0,
+        max_audio_len: int = 5000,
+        apply_sliding: bool = False,
+        sliding_window: int = 0,
+        use_flash: bool = True,
+        conditional: bool = False,
+        # --- Rotary Embedding ---
+        rope_theta: float = 10000.0,
+        initial_context_length: int = 1024,
+        rope_scaling_factor: float = 1.0,
+        rope_ntk_alpha: float = 1.0,
+        rope_ntk_beta: float = 32.0,
+        # --- RMSNorm ---
+        rms_eps: float = 1e-5,
+        **kwargs, 
     ):
         super().__init__()
+        self.d_model = d_model
+        self.head_dim = head_dim
+        self.n_heads = n_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.d_ff = d_ff
+        self.dropout = dropout
+        self.num_hidden_layers = num_hidden_layers
+        self.vocab_size = vocab_size
+        self.max_audio_len = max_audio_len
+        self.apply_sliding = apply_sliding
+        self.sliding_window = sliding_window
+        self.use_flash = use_flash
+        self.conditional = conditional
+        self.rope_theta = rope_theta
+        self.initial_context_length = initial_context_length
+        self.rope_scaling_factor = rope_scaling_factor
+        self.rope_ntk_alpha = rope_ntk_alpha
+        self.rope_ntk_beta = rope_ntk_beta
+        self.rms_eps = rms_eps
+
         self.embedding = torch.nn.Embedding(
-            config.vocab_size, config.d_model, dtype=torch.bfloat16
+            vocab_size, d_model, dtype=torch.bfloat16
         )
-        self.audio_positional_encoding = PositionalEncoding(config.d_model, config.max_audio_len)
+        self.audio_positional_encoding = PositionalEncoding(d_model, max_audio_len)
 
         self.block = torch.nn.ModuleList(
             [
                 DecoderBlockCrossAttention2(
-                    
-                    config, 
-                    layer_idx
+                    d_model, 
+                    n_heads, 
+                    d_ff, 
+                    dropout, 
+                    head_dim,
+                    num_key_value_heads,
+                    sliding_window,
+                    apply_sliding,
+                    rope_theta,
+                    rope_scaling_factor,
+                    rope_ntk_alpha,
+                    rope_ntk_beta,
+                    initial_context_length,
+                    use_flash=use_flash, 
+                    layer_idx=layer_idx
                 )
-                for layer_idx in range(config.num_hidden_layers)
+                for layer_idx in range(num_hidden_layers)
             ]
         )
-        self.norm = RMSNorm(config.d_model)
+        self.norm = RMSNorm(d_model)
         self.unembedding = torch.nn.Linear(
-            config.d_model,
-            config.vocab_size,
+            d_model,
+            vocab_size,
             bias=False,
             dtype=torch.bfloat16,
         )
