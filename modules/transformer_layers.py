@@ -341,15 +341,20 @@ class RotaryEmbedding(torch.nn.Module):
     def forward(self, query: torch.Tensor, key: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # query/key: (B, T, H, q_mult, D)
         B, T, H, M, D = query.shape
-        _, inv_freq = self._compute_concentration_and_inv_freq() 
-        t = torch.arange(T, dtype=torch.float32)
+        device = query.device  # Get the device from input tensor
+    
+        _, inv_freq = self._compute_concentration_and_inv_freq()
+        inv_freq = inv_freq.to(device)  # Move to correct device
+    
+        t = torch.arange(T, dtype=torch.float32, device=device)  # Create on correct device
         freqs = torch.einsum("i,j->ij", t, inv_freq)
         cos = freqs.cos()
         sin = freqs.sin()
-        
+    
         query = _apply_rotary_emb_batched(query, cos, sin)
         key = _apply_rotary_emb_batched(key, cos, sin)
         return query, key
+
 
 def sdpa(Q, K, V, S, sm_scale, sliding_window=0, attention_mask=None):
     """
@@ -441,7 +446,7 @@ class AttentionBlock(torch.nn.Module):
         # Only apply sliding window to every other layer
         self.sliding_window = sliding_window if apply_sliding and layer_idx % 2 == 0 else 0
         self.sinks = torch.nn.Parameter(
-            torch.empty(n_heads, dtype=torch.bfloat16)
+            torch.empty(num_key_value_heads, dtype=torch.bfloat16)
         )
         self.norm = RMSNorm(d_model)
         qkv_dim = head_dim * (
@@ -468,27 +473,37 @@ class AttentionBlock(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
+        print('Input shape: ', x.shape)
         t = self.norm(x)
         qkv = self.qkv(t)
-        q = qkv[:, : self.num_attention_heads * self.head_dim].contiguous()
+    
+        q = qkv[:, :, : self.num_attention_heads * self.head_dim].contiguous()
         k = qkv[
-            :,
-            self.num_attention_heads
-            * self.head_dim : (self.num_attention_heads + self.num_key_value_heads)
-            * self.head_dim,
+            :, :,
+            self.num_attention_heads * self.head_dim : 
+            (self.num_attention_heads + self.num_key_value_heads) * self.head_dim,
         ].contiguous()
         v = qkv[
-            :,
-            (self.num_attention_heads + self.num_key_value_heads)
-            * self.head_dim : (self.num_attention_heads + 2 * self.num_key_value_heads)
-            * self.head_dim,
+            :, :,
+            (self.num_attention_heads + self.num_key_value_heads) * self.head_dim :
         ].contiguous()
-
-        q = q.view(B, T, self.num_key_value_heads,
-                self.num_attention_heads // self.num_key_value_heads, self.head_dim)
-        k = k.view(B, T, self.num_key_value_heads, self.head_dim)
-        v = v.view(B, T, self.num_key_value_heads, self.head_dim)
+    
+        # Calculate q_mult for grouped-query attention
+        q_mult = self.num_attention_heads // self.num_key_value_heads
+    
+        # Reshape: Q has multiple queries per KV head
+        q = q.view(B, T, self.num_key_value_heads, q_mult, self.head_dim)  # (B, T, H_kv, q_mult, D)
+        k = k.view(B, T, self.num_key_value_heads, 1, self.head_dim)       # (B, T, H_kv, 1, D)
+        v = v.view(B, T, self.num_key_value_heads, self.head_dim)          # (B, T, H_kv, D)
+        
+        print('Q shape: ', q.shape)
+        print('K shape: ', k.shape)
+        print('V shape: ', v.shape)
         q, k = self.rope(q, k)
+    
+        # Remove the q_mult=1 dimension from k
+        k = k.squeeze(3)  # (B, T, H_kv, D)
+    
         t = sdpa(q, k, v, self.sinks, self.sm_scale, self.sliding_window, attention_mask=attention_mask)
         t = self.out(t)
         t = x + t
@@ -510,7 +525,7 @@ class FeedForward2(nn.Module):
         super().__init__()
         self.norm = RMSNorm(d_model)
         self.linear1 = nn.Linear(d_model, d_ff)
-        self.linear_out = nn.Linear(d_ff, d_model)
+        self.linear_out = nn.Linear(d_ff // 2, d_model)
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
@@ -579,6 +594,8 @@ class DecoderBlockCrossAttention2(nn.Module):
         x = decoder_input
         x = x + self.self_attn(x, decoder_mask)
         
+        print('Shape post attention: ', x.shape)
+
         # Cross-attention
         x = x + self.cross_attn(
             query=self.norm(x),         # decoder sequence
@@ -586,6 +603,8 @@ class DecoderBlockCrossAttention2(nn.Module):
             query_mask=decoder_mask,
             kv_mask=encoder_mask
         )
+
+        print('Shape post cross attention: ', x.shape)
         
         # Feed forward
         x = x + self.dropout(self.feed_forward(x))
@@ -649,19 +668,19 @@ class Transformer(torch.nn.Module):
         self.block = torch.nn.ModuleList(
             [
                 DecoderBlockCrossAttention2(
-                    d_model, 
-                    n_heads, 
-                    d_ff, 
-                    dropout, 
-                    head_dim,
-                    num_key_value_heads,
-                    sliding_window,
-                    apply_sliding,
-                    rope_theta,
-                    rope_scaling_factor,
-                    rope_ntk_alpha,
-                    rope_ntk_beta,
-                    initial_context_length,
+                    d_model=d_model, 
+                    n_heads=n_heads, 
+                    d_ff=d_ff, 
+                    dropout=dropout, 
+                    head_dim=head_dim,
+                    num_key_value_heads=num_key_value_heads,
+                    sliding_window=sliding_window,
+                    apply_sliding=apply_sliding,
+                    rope_theta=rope_theta,
+                    rope_scaling_factor=rope_scaling_factor,
+                    rope_ntk_alpha=rope_ntk_alpha,
+                    rope_ntk_beta=rope_ntk_beta,
+                    initial_context_length=initial_context_length,
                     use_flash=use_flash, 
                     layer_idx=layer_idx
                 )
