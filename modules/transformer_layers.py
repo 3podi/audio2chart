@@ -684,8 +684,8 @@ class Transformer(torch.nn.Module):
             attention_mask = self.create_attention_mask(input_ids)
         
         # Token embeddings and positional encoding
-        x = self.token_embedding(input_ids)
-        x = self.positional_encoding(x)
+        x = self.embedding(input_ids)
+        #x = self.positional_encoding(x)
 
         if self.conditional:
             assert class_ids is not None, "class_idx must be provided for conditional transformer"
