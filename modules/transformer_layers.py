@@ -556,6 +556,7 @@ class Transformer(torch.nn.Module):
     def __init__(
         self,
         config,
+        **kwargs
     ):
         super().__init__()
         self.embedding = torch.nn.Embedding(
