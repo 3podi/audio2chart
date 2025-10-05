@@ -562,6 +562,8 @@ class Transformer(torch.nn.Module):
         self.embedding = torch.nn.Embedding(
             config.vocab_size, config.d_model, dtype=torch.bfloat16
         )
+        self.audio_positional_encoding = PositionalEncoding(config.d_model, config.max_audio_len)
+
         self.block = torch.nn.ModuleList(
             [
                 DecoderBlockCrossAttention2(
