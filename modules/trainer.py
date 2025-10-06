@@ -368,7 +368,7 @@ class WaveformTransformer(L.LightningModule):
         #x_dt = x_dt[:,1:].contiguous()
         
         # Forward pass
-        audio_encoded = self.audio_encoder(audio.contiguous())
+        audio_encoded = self.audio_encoder(audio.squeeze().contiguous())
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
        
         logits_flat = logits.reshape(-1, self.vocab_size)

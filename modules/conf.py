@@ -280,6 +280,7 @@ class ConformerEncoder(nn.Module):
         ])
 
         self.max_audio_length = 5000  # Fixed size, no dynamic update needed
+        self.pointwise_conv1 = nn.Conv1d(d_model, 512, kernel_size=1)
 
     def forward(
         self,
@@ -304,8 +305,8 @@ class ConformerEncoder(nn.Module):
                 pad_mask=None
             )
 
-        
-        return audio_signal#, length
+        audio_signal = self.pointwise_conv1(audio_signal.transpose(1,2))
+        return audio_signal.transpose(1,2)#, length
 
 
 

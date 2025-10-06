@@ -4,9 +4,9 @@ batch_size: 4
 validation_split: 0.2
 diff_list: 
   - Expert
-  - Hard
-  - Medium
-  - Easy
+  #- Hard
+  #- Medium
+  #- Easy
 inst_list: 
   - Single
 max_length: 513

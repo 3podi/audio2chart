@@ -40,8 +40,15 @@ def validate_dataset(data, difficulties, instruments):
             tokenized_chart = tokenizer.format_seconds(
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
+            
+            time_deltas = []
+            for i in range(1, len(tokenized_chart)):
+                delta = tokenized_chart[i][0] - tokenized_chart[i-1][0]
+                time_deltas.append(delta)
 
-            if len(notes) > 0 and len(notes) < MAX_NOTES:
+            min_delta = min(time_deltas)
+
+            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > 0.02:
                 valid_items.append(item)
         except Exception as e:
             print(f"Skipping invalid chart: {item['chart_path']} - {e}")
