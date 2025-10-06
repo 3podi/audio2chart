@@ -1,6 +1,5 @@
 name: EXP_CONF
 
-use_spectrogram: true
 
 #Conformer encoder config
 encoder:

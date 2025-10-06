@@ -2,11 +2,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import librosa
 import torchaudio
 import numpy as np
 from typing import Optional, Tuple
-from torch.backends.cuda import SDPBackend, sdpa_kernel
+
 
 # Depthwise Separable Convolution for Fast Conformer downsampling
 class DepthwiseSeparableConv2d(nn.Module):
@@ -105,16 +104,15 @@ class MultiHeadAttention(nn.Module):
         else:
             attn_mask = None
 
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
-            out = F.scaled_dot_product_attention(
-                query=Q,
-                key=K,
-                value=V,
-                attn_mask=attn_mask,
-                dropout_p=self.dropout.p if self.training else 0.0,
-                is_causal=self.is_causal,
-                enable_gqa=True
-            )
+        out = F.scaled_dot_product_attention(
+            query=Q,
+            key=K,
+            value=V,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout.p if self.training else 0.0,
+            is_causal=self.is_causal,
+            enable_gqa=True
+        )
 
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         return self.linear_out(out)
@@ -286,7 +284,7 @@ class ConformerEncoder(nn.Module):
     def forward(
         self,
         audio_signal: torch.Tensor,
-        length: torch.Tensor
+        #length: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if audio_signal.shape[1] != self.feat_in:
             raise ValueError(f"Expected audio_signal dimension {self.feat_in}, got {audio_signal.shape[1]}")
@@ -296,7 +294,7 @@ class ConformerEncoder(nn.Module):
         batch, channels, feat, time = audio_signal.shape
         audio_signal = audio_signal.permute(0, 3, 2, 1).reshape(batch, time, feat * channels)
         audio_signal = self.pre_encode_linear(audio_signal)
-        length = ((length + self.subsampling_factor - 1) // self.subsampling_factor).to(torch.int64)
+        #length = ((length + self.subsampling_factor - 1) // self.subsampling_factor).to(torch.int64)
 
         for layer in self.layers:
             audio_signal = layer(
@@ -306,8 +304,8 @@ class ConformerEncoder(nn.Module):
                 pad_mask=None
             )
 
-        audio_signal = audio_signal.transpose(1, 2)
-        return audio_signal, length
+        
+        return audio_signal#, length
 
 
 
@@ -325,12 +323,27 @@ if __name__ == "__main__":
         dropout=0.1,
         dropout_att=0.0
     )
+
+    # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+
+    # Create input tensor (adjust shape if needed)
+    input_tensor = torch.randn(8, 80, 5000)  # (batch, seq_len, feat_in) is common
+    input_tensor = input_tensor.to(device)
+
+    # Run inference
     model.eval()
+    with torch.no_grad():  # Disable gradient tracking
+        output = model(input_tensor)
+
+    # Print results
+    print("Input shape:", input_tensor.shape)
+    print("Output shape:", output.shape)
+    print("Output device:", output.device)
 
     # Process a .wav file
-    wav_path = "path/to/your/audio.wav"  # Replace with actual path
-    outputs, encoded_lengths = process_wav_chunks(wav_path, model)
-    print(f"Output shape: {outputs.shape}")
-    print(f"Encoded lengths: {encoded_lengths}")
+    #wav_path = "path/to/your/audio.wav"  # Replace with actual path
+    #outputs, encoded_lengths = process_wav_chunks(wav_path, model)
+    #print(f"Output shape: {outputs.shape}")
+    #print(f"Encoded lengths: {encoded_lengths}")

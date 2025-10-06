@@ -76,14 +76,14 @@ def main(config: DictConfig):
     encoder_cfg = config.model.encoder
 
     # Compact string for ratios
-    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
+    #ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
 
     # Build run name
-    run_name = (
-        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
-        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
-        f"_dim{encoder_cfg.dimension}"
-    )
+    #run_name = (
+    #    f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+    #    f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+    #    f"_dim{encoder_cfg.dimension}"
+    #)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
@@ -94,7 +94,7 @@ def main(config: DictConfig):
         #f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
-        f"{run_name}_"
+        #f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -152,6 +152,7 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
+        use_spectrogram=config.use_spectrogram
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -164,6 +165,7 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
+        use_spectrogram=config.use_spectrogram
     )
     
     print('Length train dataloader: ', len(train_dataloader))
@@ -178,8 +180,8 @@ def main(config: DictConfig):
         cfg_optimizer=config.optimizer
     )
 
-    rf = model.audio_encoder.compute_receptive_field()
-    wandb.log({"rf": rf})
+    #rf = model.audio_encoder.compute_receptive_field()
+    #wandb.log({"rf": rf})
     
 
     # Callbacks

@@ -9,7 +9,7 @@ diff_list:
   - Easy
 inst_list: 
   - Single
-max_length: 256
+max_length: 513
 
 
 #Optimizer Config

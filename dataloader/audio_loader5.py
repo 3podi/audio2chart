@@ -155,6 +155,7 @@ class ChunkedWaveformDataset(Dataset):
         precomputed_windows: bool = False,       
         decode_to_raw_on_init: bool = False,     
         raw_dir: str = "raw_audio",              # where to store when converting
+        use_spectrogram: bool = False
     ):
         self.data = data
         self.bos_token = bos_token
@@ -177,6 +178,7 @@ class ChunkedWaveformDataset(Dataset):
         self.precomputed_windows = precomputed_windows
         self.decode_to_raw_on_init = decode_to_raw_on_init
         self.raw_dir = raw_dir
+        self.use_spectrogram = use_spectrogram
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
 
@@ -622,6 +624,7 @@ def create_chunked_audio_chart_dataloader(
     precomputed_windows: bool = False,
     decode_to_raw_on_init: bool = False,
     raw_dir: str = "raw_audio",
+    use_spectrogram: bool = False
 ) -> Tuple[DataLoader, Dict]:
     """
     High-performance dataloader factory with all optimizations.
@@ -669,6 +672,7 @@ def create_chunked_audio_chart_dataloader(
         precomputed_windows=precomputed_windows,
         decode_to_raw_on_init=decode_to_raw_on_init,
         raw_dir=raw_dir,
+        use_spectrogram=use_spectrogram
     )
 
     print(f"[INFO] Total items: {len(dataset)}, chunk_size={dataset.chunk_size}, workers={num_workers}")
