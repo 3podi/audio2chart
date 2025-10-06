@@ -22,6 +22,85 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Dict, List, Optional, Tuple
 import platform
 
+
+import torch
+import torchaudio.transforms as T
+import random
+
+class MusicAugmenter:
+    def __init__(self, sample_rate: int = 16000, augment: bool = True):
+        self.sample_rate = sample_rate
+        self.augment = augment
+        #self.pitch_shift = T.PitchShift(sample_rate=sample_rate, n_semitones=0)
+        #self.eq_low = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=100, gain=0, q=1.0)
+        #self.eq_mid = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=1000, gain=0, q=1.0)
+        #self.eq_high = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=4000, gain=0, q=1.0)
+
+    def _apply_reverb(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.2:
+            ir = torch.zeros(int(0.5 * self.sample_rate))  # 0.5s at 16 kHz
+            ir[0] = 1.0
+            ir[-int(0.1 * self.sample_rate):] = torch.linspace(1.0, 0.0, int(0.1 * self.sample_rate)) * 0.2
+            waveform = torch.nn.functional.conv1d(waveform.unsqueeze(0), ir.unsqueeze(0).unsqueeze(-1)).squeeze(0)
+        return waveform
+
+    def _augment(self, waveform: torch.Tensor) -> torch.Tensor:
+        if not self.augment:
+            return waveform
+        augmentations = [
+            self._apply_gain,
+            self._apply_noise,
+            #self._apply_pitch_shift,
+            #self._apply_eq,
+            #self._apply_reverb,
+            self._apply_polarity_inversion
+        ]
+        random.shuffle(augmentations)
+        num_augs = random.randint(0, 2)  # Apply 0–2 augmentations
+        for aug in augmentations[:num_augs]:
+            waveform = aug(waveform)
+        if waveform.abs().max() > 1.0:
+            waveform = waveform / waveform.abs().max()
+        return waveform
+
+    def _apply_gain(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.5:
+            gain_db = random.uniform(-10, 10)
+            waveform = waveform * (10 ** (gain_db / 20))
+        return waveform
+
+    def _apply_noise(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.3:
+            snr_db = random.uniform(30, 50)
+            signal_power = (waveform ** 2).mean()
+            noise = torch.randn_like(waveform)
+            noise_power = (noise ** 2).mean()
+            noise_amp = (signal_power / noise_power * 10 ** (-snr_db / 10)).sqrt()
+            waveform = waveform + noise * noise_amp
+        return waveform
+
+    def _apply_pitch_shift(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.4:
+            semitones = random.uniform(-2, 2)
+            self.pitch_shift.n_semitones = semitones
+            waveform = self.pitch_shift(waveform)
+        return waveform
+
+    def _apply_eq(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.3:
+            self.eq_low.gain = random.uniform(-6, 6)
+            self.eq_mid.gain = random.uniform(-6, 6)
+            self.eq_high.gain = random.uniform(-6, 6)
+            waveform = self.eq_low(waveform)
+            waveform = self.eq_mid(waveform)
+            waveform = self.eq_high(waveform)
+        return waveform
+
+    def _apply_polarity_inversion(self, waveform: torch.Tensor) -> torch.Tensor:
+        if random.random() < 0.1:
+            waveform = -waveform
+        return waveform
+
 # --------------------
 # Constants
 # --------------------
@@ -154,6 +233,7 @@ class ChunkedWaveformDataset(Dataset):
         self.raw_dir = raw_dir
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
+        self.music_augmenter = MusicAugmenter(augment=augment)
 
         # Pre-cache chart data (CRITICAL optimization)
         self.chart_cache: Dict[Tuple[str, str], Tuple[List, List, int, float]] = {}
@@ -329,7 +409,7 @@ class ChunkedWaveformDataset(Dataset):
             print(f"Worker {self._get_worker_id()}: Failed to load {audio_path}: {e}")
             return torch.zeros(1, self.num_samples), self.sample_rate
 
-    def _augment(self, waveform: torch.Tensor) -> torch.Tensor:
+    def _augment_old(self, waveform: torch.Tensor) -> torch.Tensor:
         if not self.augment:
             return waveform
         if random.random() < 0.5:
@@ -341,6 +421,9 @@ class ChunkedWaveformDataset(Dataset):
         if random.random() < 0.3:
             waveform = -waveform
         return waveform
+
+    def _augment(self, waveform):
+        return self.music_augmenter._augment(waveform)
 
     def _process_window(self, waveform: torch.Tensor, item: Dict, start_sample: int, end_sample: int) -> Dict:
 
@@ -594,6 +677,7 @@ def create_chunked_audio_chart_dataloader(
     precomputed_windows: bool = False,
     decode_to_raw_on_init: bool = False,
     raw_dir: str = "raw_audio",
+    augment: bool = False
 ) -> Tuple[DataLoader, Dict]:
     """
     High-performance dataloader factory with all optimizations.
@@ -636,7 +720,7 @@ def create_chunked_audio_chart_dataloader(
         chunk_repeat=chunk_repeat,
         shuffle_chunks=shuffle_chunks,
         conditional=conditional,
-        augment=False,  # Enable in training if needed
+        augment=augment,  # Enable in training if needed
         use_predecoded_raw=use_predecoded_raw,
         precomputed_windows=precomputed_windows,
         decode_to_raw_on_init=decode_to_raw_on_init,
