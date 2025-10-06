@@ -35,6 +35,31 @@ DIFF_MAPPING = {
 MAX_AUDIO_SAMPLES = 10 * 60 * 16000  # 10 minutes @ 16kHz
 MAX_BYTES = MAX_AUDIO_SAMPLES * 2    # 16-bit = 2 bytes per sample
 
+import torchaudio
+def extract_mel_spectrogram(
+    waveform: np.ndarray,
+    sample_rate: int = 16000,
+    n_mels: int = 80,
+    hop_length: int = 160,
+    win_length: int = 400,
+    n_fft: int = 512
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Extract mel-spectrogram from a waveform chunk."""
+    waveform = torch.from_numpy(waveform).float().unsqueeze(0)
+    mel_transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=sample_rate,
+        n_fft=n_fft,
+        win_length=win_length,
+        hop_length=hop_length,
+        n_mels=n_mels,
+        f_min=0,
+        f_max=sample_rate // 2
+    )
+    mel_spec = mel_transform(waveform)
+    mel_spec = torch.log(mel_spec + 1e-9)
+    length = torch.tensor([mel_spec.size(2)], dtype=torch.int64)
+    return mel_spec, length
+
 # --------------------
 # Audio loading (FFMPEG - FASTEST for .opus)
 # --------------------
@@ -365,6 +390,9 @@ class ChunkedWaveformDataset(Dataset):
         if self.augment:
             chunk = chunk.clone()  # only clone when augmenting
             chunk = self._augment(chunk)
+
+        if self.use_spectrogram:
+            chunk, _ = extract_mel_spectrogram(waveform=chunk)
 
         #logger.info(f"[WORKER {worker_id}] Window extracted, now processing chart...", extra={'worker_id': worker_id})
 
