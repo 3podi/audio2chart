@@ -288,7 +288,7 @@ class ConformerEncoder(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if audio_signal.shape[1] != self.feat_in:
             raise ValueError(f"Expected audio_signal dimension {self.feat_in}, got {audio_signal.shape[1]}")
-
+        
         audio_signal = audio_signal.unsqueeze(1)
         audio_signal = self.pre_encode(audio_signal)
         batch, channels, feat, time = audio_signal.shape

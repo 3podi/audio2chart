@@ -286,9 +286,9 @@ class WaveformTransformer(L.LightningModule):
         assert not torch.isnan(x).any(), "NaN in"
 
         # Forward pass
-        print('Audio shape: ', audio.shape)
-        audio_encoded = self.audio_encoder(audio.contiguous())
-        print('Encoded shape: ', audio_encoded.shape)
+        #print('Audio shape: ', audio.squeeze().shape)
+        audio_encoded = self.audio_encoder(audio.squeeze().contiguous())
+        #print('Encoded shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
         
         logits_flat = logits.reshape(-1, self.vocab_size)

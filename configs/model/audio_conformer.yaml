@@ -18,7 +18,7 @@ encoder:
 #Transformer Decocer config
 transformer:
   _target_: modules.models.TransformerDecoderAudioConditioned
-  d_model: 512
+  d_model: 256
   n_heads: 4
   n_layers: 8
   d_ff: 1024

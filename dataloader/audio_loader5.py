@@ -37,7 +37,7 @@ MAX_BYTES = MAX_AUDIO_SAMPLES * 2    # 16-bit = 2 bytes per sample
 
 import torchaudio
 def extract_mel_spectrogram(
-    waveform: np.ndarray,
+    waveform,
     sample_rate: int = 16000,
     n_mels: int = 80,
     hop_length: int = 160,
@@ -45,7 +45,6 @@ def extract_mel_spectrogram(
     n_fft: int = 512
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Extract mel-spectrogram from a waveform chunk."""
-    waveform = torch.from_numpy(waveform).float().unsqueeze(0)
     mel_transform = torchaudio.transforms.MelSpectrogram(
         sample_rate=sample_rate,
         n_fft=n_fft,
@@ -395,7 +394,7 @@ class ChunkedWaveformDataset(Dataset):
 
         if self.use_spectrogram:
             chunk, _ = extract_mel_spectrogram(waveform=chunk)
-
+        
         #logger.info(f"[WORKER {worker_id}] Window extracted, now processing chart...", extra={'worker_id': worker_id})
 
 
@@ -571,7 +570,8 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
         batch_note_durations.append(padded_durations)
         attention_masks.append(attention_mask)
         batch_diff.append(sample["cond_diff"])
-
+    
+    #print('Collator audio shape: ', torch.stack(batch_audio,dim=0).shape)
     return {
         "audio": torch.stack(batch_audio, dim=0).float(),
         "note_values": torch.tensor(batch_note_values, dtype=torch.long),
