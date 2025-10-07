@@ -189,7 +189,6 @@ def main(config: DictConfig):
         cfg_model=config.model,
         cfg_optimizer=config.optimizer
     )
-    model = torch.compile(model)
 
     rf = model.audio_encoder.compute_receptive_field()
     wandb.log({"rf": rf})
