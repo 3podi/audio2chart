@@ -602,9 +602,9 @@ class TransformerDecoderAudioConditioned(nn.Module):
         #print('input audio shape iniziale: ', input_audio.shape)
         input_audio = self.audio_positional_encoding(input_audio)#.permute(0, 2, 1))
         
-        # Create attention mask if not provided
-        if attention_mask is None:
-            attention_mask = self.create_attention_mask(input_ids)
+        # Create attention mask if not provided, should be handled in the attention layers when None
+        #if attention_mask is None:
+        #    attention_mask = self.create_attention_mask(input_ids)
         
         # Token embeddings and positional encoding
         #print('x shape: ', input_ids.shape)

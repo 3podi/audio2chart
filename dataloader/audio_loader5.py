@@ -154,7 +154,8 @@ class ChunkedWaveformDataset(Dataset):
         precomputed_windows: bool = False,       
         decode_to_raw_on_init: bool = False,     
         raw_dir: str = "raw_audio",              # where to store when converting
-        use_spectrogram: bool = False
+        use_spectrogram: bool = False,
+        is_discrete: bool = False
     ):
         self.data = data
         self.bos_token = bos_token
@@ -178,6 +179,7 @@ class ChunkedWaveformDataset(Dataset):
         self.decode_to_raw_on_init = decode_to_raw_on_init
         self.raw_dir = raw_dir
         self.use_spectrogram = use_spectrogram
+        self.is_discrete = is_discrete
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
 
@@ -416,27 +418,52 @@ class ChunkedWaveformDataset(Dataset):
             )
             #logger.info(f"[WORKER {worker_id}] Formatted seconds, got {len(tokenized_chart)} events", extra={'worker_id': worker_id})
 
+            if self.is_discrete:
 
-            filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
-            #logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
+                #Extract time and token lists
+                time_list = [note[0] for note in tokenized_chart]
+                tokens_list = [note[1] for note in tokenized_chart]
 
-            if filtered:
-                note_times, note_values, note_durations = map(list, zip(*filtered))
-                note_times = [(t - start_seconds) / self.window_seconds for t in note_times]
+                grid = self.tokenizer.discretize_time(
+                            time_list, 
+                            tokens_list, 
+                            self.pad_token_id, #change this if starting using non equal length discretized seqs
+                            grid_ms=20, 
+                            window_seconds=30
+                        )
+                
+                diff = [-1] if not self.conditional else [
+                    mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in item["difficulty"]
+                ]
+
+                return {
+                    "audio": chunk,
+                    "note_values": grid,
+                    "cond_diff": diff,
+                }
+
             else:
-                note_times, note_values, note_durations = [], [], []
 
-            diff = [-1] if not self.conditional else [
-                mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in item["difficulty"]
-            ]
+                filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
+                #logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
 
-            return {
-                "audio": chunk,
-                "note_times": note_times,
-                "note_values": note_values,
-                "note_durations": note_durations,
-                "cond_diff": diff,
-            }
+                if filtered:
+                    note_times, note_values, note_durations = map(list, zip(*filtered))
+                    note_times = [(t - start_seconds) / self.window_seconds for t in note_times]
+                else:
+                    note_times, note_values, note_durations = [], [], []
+
+                diff = [-1] if not self.conditional else [
+                    mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in item["difficulty"]
+                ]
+
+                return {
+                    "audio": chunk,
+                    "note_times": note_times,
+                    "note_values": note_values,
+                    "note_durations": note_durations,
+                    "cond_diff": diff,
+                }
 
         except Exception as e:
             print(f"Worker {self._get_worker_id()}: Chart processing failed: {e}")
@@ -581,8 +608,32 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
         "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
     }
 
+
+def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_token: int, conditional: bool) -> Dict:
+    flat_batch = [sample for sublist in batch for sample in sublist]
+
+
+    batch_audio, batch_note_values = [], []
+    batch_diff = []
+
+    for sample in flat_batch:
+        audio = sample['audio']
+        note_values = [bos_token] + sample["note_values"] + [eos_token]
+
+
+        batch_audio.append(audio)
+        batch_note_values.append(note_values)
+        batch_diff.append(sample["cond_diff"])
+    
+    #print('Collator audio shape: ', torch.stack(batch_audio,dim=0).shape)
+    return {
+        "audio": torch.stack(batch_audio, dim=0).float(),
+        "note_values": torch.tensor(batch_note_values, dtype=torch.long),
+        "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
+    }
+
 class AudioChartCollator:
-    def __init__(self, bos_token: int, eos_token: int, pad_token: int = -100, max_length: int = 512, conditional: bool = False):
+    def __init__(self, bos_token: int, eos_token: int, pad_token: int = -100, max_length: int = 512, conditional: bool = False, is_discrete: bool = False):
         self.bos_token = bos_token
         self.eos_token = eos_token
         self.pad_token = pad_token
@@ -590,13 +641,18 @@ class AudioChartCollator:
         self.conditional = conditional
 
         # Store args for passing to compiled function
-        self._args = (bos_token, eos_token, pad_token, max_length, conditional)
 
         # Compile the top-level function
         #if torch.__version__ >= "2.1":
         #    self._collate_fn = torch.compile(_collate_batch_impl, mode="reduce-overhead")
         #else:
-        self._collate_fn = _collate_batch_impl
+        if is_discrete:
+            self._collate_fn = _collate_batch_impl_discrete
+            self._args = (bos_token, eos_token, conditional)
+        else:
+            self._collate_fn = _collate_batch_impl
+            self._args = (bos_token, eos_token, pad_token, max_length, conditional)
+
 
     def __call__(self, batch: List[List[Dict]]) -> Dict:
         return self._collate_fn(batch, *self._args)
@@ -624,7 +680,8 @@ def create_chunked_audio_chart_dataloader(
     precomputed_windows: bool = False,
     decode_to_raw_on_init: bool = False,
     raw_dir: str = "raw_audio",
-    use_spectrogram: bool = False
+    use_spectrogram: bool = False,
+    is_discrete: bool = False
 ) -> Tuple[DataLoader, Dict]:
     """
     High-performance dataloader factory with all optimizations.
@@ -649,7 +706,8 @@ def create_chunked_audio_chart_dataloader(
         eos_token=vocab['<eos>'],
         pad_token=vocab['<PAD>'],
         max_length=max_length,
-        conditional=conditional
+        conditional=conditional,
+        is_discrete=is_discrete
     )
 
     dataset = ChunkedWaveformDataset(
@@ -672,7 +730,8 @@ def create_chunked_audio_chart_dataloader(
         precomputed_windows=precomputed_windows,
         decode_to_raw_on_init=decode_to_raw_on_init,
         raw_dir=raw_dir,
-        use_spectrogram=use_spectrogram
+        use_spectrogram=use_spectrogram,
+        is_discrete=is_discrete
     )
 
     print(f"[INFO] Total items: {len(dataset)}, chunk_size={dataset.chunk_size}, workers={num_workers}")
