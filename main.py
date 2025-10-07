@@ -6,12 +6,13 @@ import random
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
-from modules.trainer import WaveformTransformer
+from modules.trainer import WaveformTransformer, WaveformTransformerDiscrete
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+import torch
 import hydra
 
 #from transformers import AutoProcessor, EncodecModel
@@ -48,7 +49,7 @@ def validate_dataset(data, difficulties, instruments):
 
             min_delta = min(time_deltas)
 
-            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > 0.02:
+            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > 0.01:
                 valid_items.append(item)
         except Exception as e:
             print(f"Skipping invalid chart: {item['chart_path']} - {e}")
@@ -159,7 +160,8 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        use_spectrogram=config.use_spectrogram
+        use_spectrogram=config.use_spectrogram,
+        is_discrete= True
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -172,20 +174,22 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        use_spectrogram=config.use_spectrogram
+        use_spectrogram=config.use_spectrogram,
+        is_discrete=True
     )
     
     print('Length train dataloader: ', len(train_dataloader))
     print('Length val dataloader: ', len(val_dataloader))
 
     # Model
-    model = WaveformTransformer(
+    model = WaveformTransformerDiscrete(
         pad_token_id=vocab['<PAD>'],
         eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
         cfg_optimizer=config.optimizer
     )
+    model = torch.compile(model)
 
     rf = model.audio_encoder.compute_receptive_field()
     wandb.log({"rf": rf})

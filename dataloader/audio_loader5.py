@@ -427,7 +427,7 @@ class ChunkedWaveformDataset(Dataset):
                 grid = self.tokenizer.discretize_time(
                             time_list, 
                             tokens_list, 
-                            self.pad_token_id, #change this if starting using non equal length discretized seqs
+                            self.pad_token, #change this if starting using non equal length discretized seqs
                             grid_ms=20, 
                             window_seconds=30
                         )

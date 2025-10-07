@@ -538,6 +538,7 @@ class WaveformTransformerDiscrete(L.LightningModule):
         x = batch.get('note_values', None)
         class_ids = batch.get('cond_diff', None)
         
+        #print('Tokens shape: ', x.shape)
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
        
@@ -673,9 +674,9 @@ class WaveformTransformerDiscrete(L.LightningModule):
             nonpad_perplexity = torch.exp(nonpad_loss)
 
             # Log only for monitoring (not backprop)
-            self.log("train/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
-            self.log("train/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
-            self.log("train/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
+            self.log("val/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
+            self.log("val/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
+            self.log("val/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
