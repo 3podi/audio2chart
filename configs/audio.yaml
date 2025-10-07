@@ -1,6 +1,6 @@
 defaults:
   - default.yaml
-  - model: audio_conformer
+  - model: audio_transformer
   - _self_
 
 
@@ -10,6 +10,6 @@ optimizer:
 
 data_split_folder: null
 window_seconds: 30
-use_spectrogram: true
+use_spectrogram: false
 
 tags: [audio]

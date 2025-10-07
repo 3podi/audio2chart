@@ -83,14 +83,14 @@ def main(config: DictConfig):
     encoder_cfg = config.model.encoder
 
     # Compact string for ratios
-    #ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
+    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
 
     # Build run name
-    #run_name = (
-    #    f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
-    #    f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
-    #    f"_dim{encoder_cfg.dimension}"
-    #)
+    run_name = (
+        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+        f"_dim{encoder_cfg.dimension}"
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
@@ -98,10 +98,10 @@ def main(config: DictConfig):
         #f"{config.root_folder}_"
         f"seq{config.max_length}_"
         f"d{config.model.transformer.d_model}_"
-        #f"n{config.model.transformer.n_layers}_"
+        f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
-        #f"{run_name}_"
+        f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -146,8 +146,8 @@ def main(config: DictConfig):
 
     tokenizer = SimpleTokenizerGuitar()
     
-    #train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
-    #val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
+    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
+    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
@@ -181,14 +181,14 @@ def main(config: DictConfig):
     # Model
     model = WaveformTransformer(
         pad_token_id=vocab['<PAD>'],
-        eos_token_id=['<eos>'],
+        eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
         cfg_optimizer=config.optimizer
     )
 
-    #rf = model.audio_encoder.compute_receptive_field()
-    #wandb.log({"rf": rf})
+    rf = model.audio_encoder.compute_receptive_field()
+    wandb.log({"rf": rf})
     
 
     # Callbacks

@@ -251,8 +251,8 @@ class WaveformTransformer(L.LightningModule):
         )
         self.audio_encoder = instantiate(
             cfg_model.encoder,
-            #vocab_size=None,
-            #pad_token_id=pad_token_id,
+            vocab_size=None,
+            pad_token_id=pad_token_id,
         )
 
         # Optimizer
@@ -287,7 +287,7 @@ class WaveformTransformer(L.LightningModule):
 
         # Forward pass
         #print('Audio shape: ', audio.squeeze().shape)
-        audio_encoded = self.audio_encoder(audio.squeeze().contiguous())
+        audio_encoded = self.audio_encoder(audio.contiguous())
         #print('Encoded shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
         
@@ -368,7 +368,7 @@ class WaveformTransformer(L.LightningModule):
         #x_dt = x_dt[:,1:].contiguous()
         
         # Forward pass
-        audio_encoded = self.audio_encoder(audio.squeeze().contiguous())
+        audio_encoded = self.audio_encoder(audio.contiguous())
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
        
         logits_flat = logits.reshape(-1, self.vocab_size)
