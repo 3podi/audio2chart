@@ -653,7 +653,8 @@ class WaveformTransformerDiscrete(L.LightningModule):
         targets_flat = target_tokens.reshape(-1)
         
         # Compute loss
-        loss = F.cross_entropy(logits_flat, targets_flat)#, ignore_index=self.vocab_size-1)
+        weights = self.class_weights.to(logits.device)
+        loss = F.cross_entropy(logits_flat, targets_flat, weights=weights)#, ignore_index=self.vocab_size-1)
         
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
