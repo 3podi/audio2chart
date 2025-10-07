@@ -7,7 +7,7 @@ encoder:
   base_channels: 64
   dimension: 512
   n_residual_layers: 3
-  ratios: [8, 5, 4, 2]         
+  ratios: [8, 5, 4, 4]         
   kernel_size: 7
   last_kernel_size: 7
   residual_kernel_size: 3
@@ -24,38 +24,17 @@ encoder:
 
 #Transformer Decocer config
 transformer:
-  _target_: modules.transformer_layers.Transformer
-  max_audio_len: 5000
+  _target_: modules.transformer2.TransformerDecoderAudioConditioned
 
   # --- Model dimensions ---
   d_model: 512                
-  head_dim: 64                # Dimension per attention head: head_dim x n_heads = d_model
-  n_heads: 8                  
-  num_key_value_heads: 4      
   d_ff: 2048                  
-  dropout: 0.1                
+  n_heads: 4                  
+  num_kv_heads: 2
+  n_layers: 8      
+  dropout: 0.0               
 
-  # --- Architecture ---
-  num_hidden_layers: 8        # Number of Transformer blocks
-  vocab_size: 0           # Size of output vocabulary / token space
-  apply_sliding: false         # Whether to apply sliding window to every other layer
-  sliding_window: 0         # Attention window length (0 = full)
-  use_flash: true            # Placeholder flag (currently not used)
+  use_flash: true            
   conditional: false           # If true, expects class embeddings
 
-  # --- Rotary Embedding (RoPE / YaRN / NTK scaling) ---
-  rope_theta: 10000           # Base frequency (common: 10000)
-  initial_context_length: 1024
-  rope_scaling_factor: 1.0    # 1.0 = no scaling, >1.0 enables YaRN/NTK scaling
-  rope_ntk_alpha: 1.0         # NTK alpha parameter
-  rope_ntk_beta: 32.0         # NTK beta parameter
-
-  # --- RMSNorm ---
-  rms_eps: 1.0e-5
-
-  # --- Training and optimization ---
-  dtype: bfloat16             # Computation dtype
-  device: cuda                # Default device
-  max_sequence_length: 1024   # Max tokens in decoder (for training)
-
-
+  rope_base: 10000.0           # Base frequency (common: 10000)
