@@ -503,221 +503,191 @@ class WaveformTransformer(L.LightningModule):
 class WaveformTransformerDiscrete(L.LightningModule):
     def __init__(self, vocab_size, pad_token_id, eos_token_id, cfg_model, cfg_optimizer=None):
         super().__init__()
-
         self.vocab_size = vocab_size
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
 
-        #cfg_model.transformer['vocab_size'] = self.vocab_size
+        self.transformer = instantiate(cfg_model.transformer, vocab_size=self.vocab_size, pad_token_id=-1, eos_token_id=self.eos_token_id)
+        self.audio_encoder = instantiate(cfg_model.encoder, vocab_size=None, pad_token_id=pad_token_id)
 
-        # Instantiate submodels from config
-        self.transformer = instantiate(
-            cfg_model.transformer,
-            vocab_size=self.vocab_size,
-            pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
-            eos_token_id=self.eos_token_id, # useless, TODO:delete
-        )
-        self.audio_encoder = instantiate(
-            cfg_model.encoder,
-            vocab_size=None,
-            pad_token_id=pad_token_id, # is passed to the transformer
-        )
-
-        # Optimizer
         self.cfg_optimizer = cfg_optimizer
-        
+
         # Metrics
-        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
-        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
-        
+        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+
+        # Predefine all possible metrics
+        self.train_metrics = {
+            "loss": torch.tensor(0.0),
+            "acc": torch.tensor(0.0),
+            "perplexity": torch.tensor(0.0),
+            "loss_nonpad": torch.tensor(float('nan')),
+            "acc_nonpad": torch.tensor(float('nan')),
+            "perplexity_nonpad": torch.tensor(float('nan')),
+        }
+        self.class_metrics = {}  # Will be populated dynamically but logged consistently
+
         self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
-        
         audio = batch.get('audio', None)
         x = batch.get('note_values', None)
         class_ids = batch.get('cond_diff', None)
-        
-        #print('Tokens shape: ', x.shape)
+
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
-       
+
         assert not torch.isnan(audio).any(), "NaN in audio"
         assert not torch.isinf(audio).any(), "Inf in audio"
         assert not torch.isnan(x).any(), "NaN in"
 
-        # Forward pass
-        #print('Audio shape: ', audio.squeeze().shape)
         audio_encoded = self.audio_encoder(audio.contiguous())
-        #print('Encoded shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
-        
+
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
-        
-        # Compute loss
-        loss = F.cross_entropy(logits_flat, targets_flat)#, ignore_index=self.vocab_size-1)
-        
+
+        loss = F.cross_entropy(logits_flat, targets_flat)
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
         perplexity = torch.exp(loss)
-        
-        # Log metrics
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
 
+        # Update base metrics
+        self.train_metrics["loss"] = loss
+        self.train_metrics["acc"] = acc
+        self.train_metrics["perplexity"] = perplexity
 
-        # Non-pad (non-silence) mask
+        # Non-pad metrics
         nonpad_mask = targets_flat != self.pad_token_id
-
         if nonpad_mask.any():
             nonpad_logits = logits_flat[nonpad_mask]
             nonpad_targets = targets_flat[nonpad_mask]
             nonpad_preds = preds[nonpad_mask]
-
             nonpad_loss = F.cross_entropy(nonpad_logits, nonpad_targets)
             nonpad_acc = (nonpad_preds == nonpad_targets).float().mean()
             nonpad_perplexity = torch.exp(nonpad_loss)
+            self.train_metrics["loss_nonpad"] = nonpad_loss
+            self.train_metrics["acc_nonpad"] = nonpad_acc
+            self.train_metrics["perplexity_nonpad"] = nonpad_perplexity
+        else:
+            self.train_metrics["loss_nonpad"] = torch.tensor(float('nan'))
+            self.train_metrics["acc_nonpad"] = torch.tensor(float('nan'))
+            self.train_metrics["perplexity_nonpad"] = torch.tensor(float('nan'))
 
-            # Log only for monitoring (not backprop)
-            self.log("train/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
-            self.log("train/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
-            self.log("train/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
-
-
-
-        # Compute per-class metrics
+        # Per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
             with torch.no_grad():
-                # Expand class_ids to match flattened logits dimensions
-                # class_ids: [batch_size] -> [batch_size * seq_len]
                 seq_len = target_tokens.shape[1]
                 class_ids_expanded = class_ids.expand(-1, seq_len).reshape(-1)
-                
-                # First filter out ignored tokens globally
                 valid_mask = targets_flat != (self.vocab_size - 1)
-                
-                if valid_mask.sum() > 0:  # Only proceed if there are valid tokens
+                if valid_mask.sum() > 0:
                     valid_logits = logits_flat[valid_mask]
                     valid_targets = targets_flat[valid_mask]
                     valid_preds = preds[valid_mask]
                     valid_class_ids = class_ids_expanded[valid_mask]
-                    
-                    # Get unique classes among valid tokens
                     unique_classes = torch.unique(valid_class_ids)
-                    
                     for class_id in unique_classes:
-                        # Create mask for current class among valid tokens
                         class_mask = (valid_class_ids == class_id)
-
-                        if class_mask.sum() > 0:  # Only compute if class has valid tokens
-                            # Filter predictions and targets for this class
+                        if class_mask.sum() > 0:
                             class_logits = valid_logits[class_mask]
                             class_targets = valid_targets[class_mask]
                             class_preds = valid_preds[class_mask]
-                            
-                            # Compute class-specific metrics
                             class_loss = F.cross_entropy(class_logits, class_targets)
                             class_acc = (class_preds == class_targets).float().mean()
                             class_perplexity = torch.exp(class_loss)
-                            
-                            # Log class-specific metrics
                             class_name = f"class_{int(class_id.item())}"
-                            self.log(f"train/loss_{class_name}", class_loss, on_step=True, on_epoch=True)
-                            self.log(f"train/acc_{class_name}", class_acc, on_step=True, on_epoch=True)
-                            self.log(f"train/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
-        
-    
+                            if class_name not in self.class_metrics:
+                                self.class_metrics[class_name] = {"loss": torch.tensor(0.0), "acc": torch.tensor(0.0), "perplexity": torch.tensor(0.0)}
+                            self.class_metrics[class_name]["loss"] = class_loss
+                            self.class_metrics[class_name]["acc"] = class_acc
+                            self.class_metrics[class_name]["perplexity"] = class_perplexity
+
+        # Log all metrics consistently
+        for name, value in self.train_metrics.items():
+            self.log(f"train/{name}", value, on_step=True, on_epoch=True, prog_bar=name in ["loss", "acc"])
+        for class_name, metrics in self.class_metrics.items():
+            for metric_name, value in metrics.items():
+                self.log(f"train/{metric_name}_{class_name}", value, on_step=True, on_epoch=True)
+
         return loss
-        
 
     def validation_step(self, batch, batch_idx):
-        
+        # Similar changes as training_step (mirror the structure)
         audio = batch.get('audio', None)
         x = batch.get('note_values', None)
         class_ids = batch.get('cond_diff', None)
-        
+
         input_tokens = x[:, :-1].contiguous()
         target_tokens = x[:, 1:].contiguous()
-        
-        # Forward pass
+
         audio_encoded = self.audio_encoder(audio.contiguous())
         logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
-       
+
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
-        
-        # Compute loss
-        loss = F.cross_entropy(logits_flat, targets_flat)#, ignore_index=self.vocab_size-1)
-        
+
+        loss = F.cross_entropy(logits_flat, targets_flat)
         preds = torch.argmax(logits_flat, dim=-1)
-        acc = self.train_accuracy(preds, targets_flat)
+        acc = self.val_accuracy(preds, targets_flat)
         perplexity = torch.exp(loss)
-        
-        # Log metrics
-        self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("val/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("val/perplexity", perplexity, on_step=True, on_epoch=True)
 
+        # Update base metrics
+        self.train_metrics["loss"] = loss
+        self.train_metrics["acc"] = acc
+        self.train_metrics["perplexity"] = perplexity
 
-        # Non-pad (non-silence) mask
+        # Non-pad metrics
         nonpad_mask = targets_flat != self.pad_token_id
-
         if nonpad_mask.any():
             nonpad_logits = logits_flat[nonpad_mask]
             nonpad_targets = targets_flat[nonpad_mask]
             nonpad_preds = preds[nonpad_mask]
-
             nonpad_loss = F.cross_entropy(nonpad_logits, nonpad_targets)
             nonpad_acc = (nonpad_preds == nonpad_targets).float().mean()
             nonpad_perplexity = torch.exp(nonpad_loss)
+            self.train_metrics["loss_nonpad"] = nonpad_loss
+            self.train_metrics["acc_nonpad"] = nonpad_acc
+            self.train_metrics["perplexity_nonpad"] = nonpad_perplexity
+        else:
+            self.train_metrics["loss_nonpad"] = torch.tensor(float('nan'))
+            self.train_metrics["acc_nonpad"] = torch.tensor(float('nan'))
+            self.train_metrics["perplexity_nonpad"] = torch.tensor(float('nan'))
 
-            # Log only for monitoring (not backprop)
-            self.log("val/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
-            self.log("val/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
-            self.log("val/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
-
-        # Compute per-class metrics
+        # Per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
-            # Expand class_ids to match flattened logits dimensions
-            # class_ids: [batch_size] -> [batch_size * seq_len]
-            seq_len = target_tokens.shape[1]
-            class_ids_expanded = class_ids.expand(-1, seq_len).reshape(-1)
-            
-            # First filter out ignored tokens globally
-            valid_mask = targets_flat != (self.vocab_size - 1)
-            
-            if valid_mask.sum() > 0:  # Only proceed if there are valid tokens
-                valid_logits = logits_flat[valid_mask]
-                valid_targets = targets_flat[valid_mask]
-                valid_preds = preds[valid_mask]
-                valid_class_ids = class_ids_expanded[valid_mask]
-                
-                # Get unique classes among valid tokens
-                unique_classes = torch.unique(valid_class_ids)
-                
-                for class_id in unique_classes:
-                    # Create mask for current class among valid tokens
-                    class_mask = (valid_class_ids == class_id)
-                    
-                    if class_mask.sum() > 0:  # Only compute if class has valid tokens
-                        # Filter predictions and targets for this class
-                        class_logits = valid_logits[class_mask]
-                        class_targets = valid_targets[class_mask]
-                        class_preds = valid_preds[class_mask]
-                        
-                        # Compute class-specific metrics
-                        class_loss = F.cross_entropy(class_logits, class_targets)
-                        class_acc = (class_preds == class_targets).float().mean()
-                        class_perplexity = torch.exp(class_loss)
-                        
-                        # Log class-specific metrics
-                        class_name = f"class_{int(class_id.item())}"
-                        self.log(f"val/loss_{class_name}", class_loss, on_step=True, on_epoch=True)
-                        self.log(f"val/acc_{class_name}", class_acc, on_step=True, on_epoch=True)
-                        self.log(f"val/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
-        
+            with torch.no_grad():
+                seq_len = target_tokens.shape[1]
+                class_ids_expanded = class_ids.expand(-1, seq_len).reshape(-1)
+                valid_mask = targets_flat != (self.vocab_size - 1)
+                if valid_mask.sum() > 0:
+                    valid_logits = logits_flat[valid_mask]
+                    valid_targets = targets_flat[valid_mask]
+                    valid_preds = preds[valid_mask]
+                    valid_class_ids = class_ids_expanded[valid_mask]
+                    unique_classes = torch.unique(valid_class_ids)
+                    for class_id in unique_classes:
+                        class_mask = (valid_class_ids == class_id)
+                        if class_mask.sum() > 0:
+                            class_logits = valid_logits[class_mask]
+                            class_targets = valid_targets[class_mask]
+                            class_preds = valid_preds[class_mask]
+                            class_loss = F.cross_entropy(class_logits, class_targets)
+                            class_acc = (class_preds == class_targets).float().mean()
+                            class_perplexity = torch.exp(class_loss)
+                            class_name = f"class_{int(class_id.item())}"
+                            if class_name not in self.class_metrics:
+                                self.class_metrics[class_name] = {"loss": torch.tensor(0.0), "acc": torch.tensor(0.0), "perplexity": torch.tensor(0.0)}
+                            self.class_metrics[class_name]["loss"] = class_loss
+                            self.class_metrics[class_name]["acc"] = class_acc
+                            self.class_metrics[class_name]["perplexity"] = class_perplexity
+
+        # Log all metrics consistently
+        for name, value in self.train_metrics.items():
+            self.log(f"val/{name}", value, on_step=True, on_epoch=True, prog_bar=name in ["loss", "acc"])
+        for class_name, metrics in self.class_metrics.items():
+            for metric_name, value in metrics.items():
+                self.log(f"val/{metric_name}_{class_name}", value, on_step=True, on_epoch=True)
+
         return loss
 
     def test_step(self, batch, batch_idx):
