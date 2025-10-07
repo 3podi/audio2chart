@@ -220,7 +220,7 @@ def main(config: DictConfig):
         #check_val_every_n_epoch=cfg["val_frequency"],
         num_sanity_val_steps=0,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
-        #gradient_clip_val=1.0,
+        gradient_clip_val=1.0,
     )
 
     trainer.fit(
