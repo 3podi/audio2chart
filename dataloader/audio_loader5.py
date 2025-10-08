@@ -31,7 +31,7 @@ class MusicAugmenter:
     def __init__(self, sample_rate: int = 16000, augment: bool = True):
         self.sample_rate = sample_rate
         self.augment = augment
-        self.pitch_shift = T.PitchShift(sample_rate=sample_rate, n_semitones=0)
+        self.pitch_shift = T.PitchShift(sample_rate=sample_rate, n_steps=0)
         self.eq_low = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=100, gain=0, q=1.0)
         self.eq_mid = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=1000, gain=0, q=1.0)
         self.eq_high = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=4000, gain=0, q=1.0)
@@ -82,7 +82,7 @@ class MusicAugmenter:
     def _apply_pitch_shift(self, waveform: torch.Tensor) -> torch.Tensor:
         if random.random() < 0.4:
             semitones = random.uniform(-2, 2)
-            self.pitch_shift.n_semitones = semitones
+            self.pitch_shift.n_steps = semitones
             waveform = self.pitch_shift(waveform)
         return waveform
 
