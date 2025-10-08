@@ -155,6 +155,42 @@ class SimpleTokenizerGuitar():
         return convert_notes_to_seconds(notes, bpm_events, resolution, offset)
 
 
+    def discretize_time(self, time_list, tokens_list, pad_token_id, grid_ms, window_seconds):
+        """
+        Map tokens to a time-grid.
+        """
+
+        assert isinstance(pad_token_id, int), 'Pad token id must be an int'
+        
+        if len(tokens_list) != len(time_list):
+            raise ValueError("tokens and times_sec must have the same length")
+
+        min_dt = min_delta(time_list)
+        if min_dt < grid_ms / 2000:
+            raise ValueError("Min dt too short will cause collision in discretization")
+
+        grid_s = grid_ms / 1000.0
+        n_steps = int(window_seconds / grid_s)
+
+        grid = [pad_token_id] * n_steps
+
+        # Round each token time to nearest grid step
+        for token, t in zip(tokens_list, time_list):
+            idx = int(round(t / grid_s))
+            if idx < len(grid):
+                grid[idx] = token
+
+        return grid
+
+
+def min_delta(times_sec):
+    times_sorted = sorted(times_sec)
+    return min(
+        times_sorted[i] - times_sorted[i - 1]
+        for i in range(1, len(times_sorted))
+    )
+
+
  #Per l errore quando nelle vere notes ho uno star power che inizia in un tick semza altre note, 
  # esso non viene salvato perche non salvo gli inizi degli star power.
  # quando pero decodo la prima nota in quello star power allora il decoder mettera S,2 con quella nota 

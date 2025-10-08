@@ -6,7 +6,7 @@ import random
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
-from modules.trainer import WaveformTransformer
+from modules.trainer import WaveformTransformer, WaveformTransformerDiscrete
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -21,7 +21,6 @@ from chart.chart_processor import ChartProcessor
 import json
 
 MAX_NOTES = 5000
-
 
 def validate_dataset(data, difficulties, instruments):
     valid_items = []
@@ -40,8 +39,15 @@ def validate_dataset(data, difficulties, instruments):
             tokenized_chart = tokenizer.format_seconds(
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
+            
+            time_deltas = []
+            for i in range(1, len(tokenized_chart)):
+                delta = tokenized_chart[i][0] - tokenized_chart[i-1][0]
+                time_deltas.append(delta)
 
-            if len(notes) > 0 and len(notes) < MAX_NOTES:
+            min_delta = min(time_deltas)
+
+            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > 0.01:
                 valid_items.append(item)
         except Exception as e:
             print(f"Skipping invalid chart: {item['chart_path']} - {e}")
@@ -139,8 +145,8 @@ def main(config: DictConfig):
 
     tokenizer = SimpleTokenizerGuitar()
     
-    #train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
-    #val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
+    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
+    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
@@ -152,6 +158,7 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
+        is_discrete=True
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -164,15 +171,16 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
+        is_discrete=True
     )
     
     print('Length train dataloader: ', len(train_dataloader))
     print('Length val dataloader: ', len(val_dataloader))
 
     # Model
-    model = WaveformTransformer(
+    model = WaveformTransformerDiscrete(
         pad_token_id=vocab['<PAD>'],
-        eos_token_id=['<eos>'],
+        eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
         cfg_optimizer=config.optimizer

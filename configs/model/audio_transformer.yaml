@@ -18,7 +18,7 @@ encoder:
     n_heads: 4
     n_layers: 4
     d_ff: 2048
-    max_seq_len: 2048
+    max_seq_len: 4096
     dropout: 0.0
     use_flash: true
 
@@ -29,7 +29,7 @@ transformer:
   n_heads: 4
   n_layers: 8
   d_ff: 2048
-  max_seq_len: 512
+  max_seq_len: 2048
   max_audio_len: 5000
   dropout: 0.0
   conditional: false
