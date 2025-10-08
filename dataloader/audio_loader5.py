@@ -31,10 +31,10 @@ class MusicAugmenter:
     def __init__(self, sample_rate: int = 16000, augment: bool = True):
         self.sample_rate = sample_rate
         self.augment = augment
-        #self.pitch_shift = T.PitchShift(sample_rate=sample_rate, n_semitones=0)
-        #self.eq_low = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=100, gain=0, q=1.0)
-        #self.eq_mid = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=1000, gain=0, q=1.0)
-        #self.eq_high = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=4000, gain=0, q=1.0)
+        self.pitch_shift = T.PitchShift(sample_rate=sample_rate, n_semitones=0)
+        self.eq_low = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=100, gain=0, q=1.0)
+        self.eq_mid = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=1000, gain=0, q=1.0)
+        self.eq_high = T.EqualizerBiquad(sample_rate=sample_rate, center_frequency=4000, gain=0, q=1.0)
 
     def _apply_reverb(self, waveform: torch.Tensor) -> torch.Tensor:
         if random.random() < 0.2:
@@ -50,8 +50,8 @@ class MusicAugmenter:
         augmentations = [
             self._apply_gain,
             self._apply_noise,
-            #self._apply_pitch_shift,
-            #self._apply_eq,
+            self._apply_pitch_shift,
+            self._apply_eq,
             #self._apply_reverb,
             self._apply_polarity_inversion
         ]

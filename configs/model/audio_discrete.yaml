@@ -1,4 +1,4 @@
-name: EXP_DISCR
+name: EXP_DISCR_2
 
 #Seanet encoder config
 encoder:
@@ -19,7 +19,7 @@ encoder:
     n_layers: 4
     d_ff: 2048
     max_seq_len: 2048
-    dropout: 0.0
+    dropout: 0.2
     use_flash: true
 
 #Transformer Decocer config
@@ -42,7 +42,7 @@ transformer:
   # --- Model dimensions ---
   d_model: 512                
   d_ff: 2048                  
-  n_heads: 4                  
+  n_heads: 8                  
   num_kv_heads: 2
   n_layers: 8      
   dropout: 0.0               

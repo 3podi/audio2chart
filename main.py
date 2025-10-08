@@ -158,7 +158,8 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=True
+        is_discrete=True,
+        augment=True
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -171,7 +172,8 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=True
+        is_discrete=True,
+        augment=False
     )
     
     print('Length train dataloader: ', len(train_dataloader))
