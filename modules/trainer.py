@@ -547,8 +547,8 @@ class WaveformTransformerDiscrete(L.LightningModule):
         # Forward pass
         #print('Audio shape: ', audio.squeeze().shape)
         audio_encoded = self.audio_encoder(audio.contiguous())
-        print('Input tokens shape: ', input_tokens.shape)
-        print('Encoded shape: ', audio_encoded.shape)
+        #print('Input tokens shape: ', input_tokens.shape)
+        #print('Encoded shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
 
         logits_flat = logits.reshape(-1, self.vocab_size)
