@@ -26,7 +26,10 @@ class WaveformTransformer(L.LightningModule):
         self.audio_encoder = instantiate(
             cfg_model.encoder,
         )
-
+        
+        for param in self.audio_encoder.parameters():
+            param.requires_grad = False
+        
         # Optimizer
         self.cfg_optimizer = cfg_optimizer
         
@@ -143,7 +146,8 @@ class WaveformTransformer(L.LightningModule):
         #x_dt = x_dt[:,1:].contiguous()
         
         # Forward pass
-        audio_encoded = self.audio_encoder(input_values, padding_mask)
+        with torch.no_grad():
+            audio_encoded = self.audio_encoder(input_values, padding_mask)
         logits = self.transformer(input_tokens, audio_encoded, attention_mask=mask, class_ids=class_ids)
        
         logits_flat = logits.reshape(-1, self.vocab_size)
@@ -153,7 +157,7 @@ class WaveformTransformer(L.LightningModule):
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
         
         preds = torch.argmax(logits_flat, dim=-1)
-        acc = self.train_accuracy(preds, targets_flat)
+        acc = self.val_accuracy(preds, targets_flat)
         perplexity = torch.exp(loss)
         
         # Log metrics

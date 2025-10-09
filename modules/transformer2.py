@@ -331,7 +331,9 @@ class TransformerDecoderAudioConditioned(nn.Module):
                 )
             )
     
-        
+        # Audio projection layer to adapt codebook_dim to d_model
+        self.audio_projection = nn.Linear(128, d_model, bias=False)
+
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
         
@@ -372,6 +374,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             # Embed the class index and add to the input
             x = x + self.cond_embedding(class_ids)
         
+        input_audio = self.audio_projection(input_audio)
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)

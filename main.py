@@ -4,9 +4,9 @@ from datetime import datetime
 import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
-from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
+from dataloader.audio_loader2 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
-from modules.trainer import WaveformTransformer, WaveformTransformerDiscrete
+from modules.trainer2 import WaveformTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -82,14 +82,14 @@ def main(config: DictConfig):
     encoder_cfg = config.model.encoder
 
     # Compact string for ratios
-    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
+    #ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
 
     # Build run name
-    run_name = (
-        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
-        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
-        f"_dim{encoder_cfg.dimension}"
-    )
+    #run_name = (
+    #    f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+    #    f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+    #    f"_dim{encoder_cfg.dimension}"
+    #)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
@@ -100,7 +100,7 @@ def main(config: DictConfig):
         f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
-        f"{run_name}_"
+        #f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -158,8 +158,8 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=True,
-        augment=True
+        is_discrete=False,
+        augment=False
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -172,7 +172,7 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=True,
+        is_discrete=False,
         augment=False
     )
     
@@ -180,7 +180,7 @@ def main(config: DictConfig):
     print('Length val dataloader: ', len(val_dataloader))
 
     # Model
-    model = WaveformTransformerDiscrete(
+    model = WaveformTransformer(
         pad_token_id=vocab['<PAD>'],
         eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
@@ -188,8 +188,8 @@ def main(config: DictConfig):
         cfg_optimizer=config.optimizer
     )
 
-    rf = model.audio_encoder.compute_receptive_field()
-    wandb.log({"rf": rf})
+    #rf = model.audio_encoder.compute_receptive_field()
+    #wandb.log({"rf": rf})
     
 
     # Callbacks

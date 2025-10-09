@@ -1,6 +1,6 @@
 defaults:
   - default.yaml
-  - model: audio_discrete
+  - model: audio_codec
   - _self_
 
 
