@@ -4,15 +4,18 @@ from datetime import datetime
 import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
-from dataloader.audio_loader2 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
+from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
-from modules.trainer2 import WaveformTransformer
+from modules.trainer import WaveformTransformer
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
+import torch
+import numpy as np
+import os
 
 #from transformers import AutoProcessor, EncodecModel
 from chart.tokenizer import SimpleTokenizerGuitar
@@ -21,6 +24,26 @@ from chart.chart_processor import ChartProcessor
 import json
 
 MAX_NOTES = 5000
+
+def set_seed_everything(seed: int = 42):
+    """
+    Sets the random seed for reproducibility across:
+      - Python's `random`
+      - NumPy
+      - PyTorch
+      - PyTorch Lightning
+    """
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    # Lightning built-in helper
+    L.seed_everything(seed, workers=True)
+
+    print(f"[Seed] Global seed set to {seed}")
 
 def validate_dataset(data, difficulties, instruments):
     valid_items = []
@@ -71,6 +94,8 @@ class LogGradientNorm(L.pytorch.callbacks.Callback):
 @hydra.main(version_base=None, config_path="configs",config_name="audio")
 def main(config: DictConfig):
 
+    set_seed_everything(config.seed)
+
     # Wandb
     wandb_config = OmegaConf.to_container(
         config,
@@ -80,16 +105,14 @@ def main(config: DictConfig):
 
 
     encoder_cfg = config.model.encoder
-
     # Compact string for ratios
-    #ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
-
+    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
     # Build run name
-    #run_name = (
-    #    f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
-    #    f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
-    #    f"_dim{encoder_cfg.dimension}"
-    #)
+    run_name = (
+        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+        f"_dim{encoder_cfg.dimension}"
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
@@ -100,7 +123,7 @@ def main(config: DictConfig):
         f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
-        #f"{run_name}_"
+        f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -115,7 +138,6 @@ def main(config: DictConfig):
     wandb_logger = WandbLogger(log_model="all")
 
     # Data
-    random.seed(42)
     if config.data_split_folder:
         with open(f"{config.data_split_folder}/train.json", "r", encoding="utf-8") as f:
             train_files = json.load(f) 
@@ -158,8 +180,8 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=False,
-        augment=False
+        is_discrete=config.is_discrete,
+        augment=config.augment
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -172,7 +194,7 @@ def main(config: DictConfig):
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
-        is_discrete=False,
+        is_discrete=config.is_discrete,
         augment=False
     )
     
@@ -218,7 +240,7 @@ def main(config: DictConfig):
         #check_val_every_n_epoch=cfg["val_frequency"],
         num_sanity_val_steps=0,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
-        #gradient_clip_val=1.0,
+        gradient_clip_val=1.0,
     )
 
     trainer.fit(

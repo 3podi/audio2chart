@@ -234,12 +234,13 @@ class NotesTransformer(L.LightningModule):
 
 
 class WaveformTransformer(L.LightningModule):
-    def __init__(self, vocab_size, pad_token_id, eos_token_id, cfg_model, cfg_optimizer=None):
+    def __init__(self, vocab_size, pad_token_id, eos_token_id, cfg_model, cfg_optimizer=None, ablation_run=False):
         super().__init__()
 
         self.vocab_size = vocab_size
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
+        self.ablation_run = ablation_run
 
         # Instantiate submodels from config
         self.transformer = instantiate(
@@ -282,7 +283,7 @@ class WaveformTransformer(L.LightningModule):
 
         assert not torch.isnan(audio).any(), "NaN in audio"
         assert not torch.isinf(audio).any(), "Inf in audio"
-        assert not torch.isnan(x).any(), "NaN in"
+        assert not torch.isnan(x).any(), "NaN in audio"
 
         # Forward pass
         audio_encoded = self.audio_encoder(audio.contiguous())
@@ -343,10 +344,47 @@ class WaveformTransformer(L.LightningModule):
                             self.log(f"train/loss_{class_name}", class_loss, on_step=True, on_epoch=True)
                             self.log(f"train/acc_{class_name}", class_acc, on_step=True, on_epoch=True)
                             self.log(f"train/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
+
+
+        # Conditioning check: Run ablations
+        if self.ablation_run and batch_idx % 100 == 0:
+            with torch.no_grad():
+                # Original loss
+                original_loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                
+                # Ablation 1: Zero-out audio encoding
+                zero_audio = torch.zeros_like(audio_encoded)
+                zero_logits = self.transformer(input_tokens, zero_audio, attention_mask=mask, class_ids=class_ids)
+                zero_logits_flat = zero_logits.reshape(-1, self.vocab_size)
+                zero_loss = F.cross_entropy(zero_logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                zero_delta = (zero_loss - original_loss).abs() / (original_loss + 1e-8)
+                self.log("train/cond_zero_delta_loss", zero_delta, on_step=True)
+                
+                # Ablation 2: Noisy audio encoding
+                if audio_encoded.numel() > 0:
+                    noise_scale = audio_encoded.std().clamp(min=1e-6)
+                    noise = torch.randn_like(audio_encoded) * noise_scale
+                    noisy_audio = audio_encoded + noise
+                    noisy_logits = self.transformer(input_tokens, noisy_audio, attention_mask=mask, class_ids=class_ids)
+                    noisy_logits_flat = noisy_logits.reshape(-1, self.vocab_size)
+                    noisy_loss = F.cross_entropy(noisy_logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                    noisy_delta = (noisy_loss - original_loss).abs() / (original_loss + 1e-8)
+                    self.log("train/cond_noisy_delta_loss", noisy_delta, on_step=True)
+                
+                # Ablation 3: Random shuffle of audio features across batch 
+                if audio_encoded.size(0) > 1:
+                    perm = torch.randperm(audio_encoded.size(0))
+                    shuffled_audio = audio_encoded[perm]
+                    shuffled_logits = self.transformer(input_tokens, shuffled_audio, attention_mask=mask, class_ids=class_ids)
+                    shuffled_logits_flat = shuffled_logits.reshape(-1, self.vocab_size)
+                    shuffled_loss = F.cross_entropy(shuffled_logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                    shuffled_delta = (shuffled_loss - original_loss).abs() / (original_loss + 1e-8)
+                    self.log("train/cond_shuffled_delta_loss", shuffled_delta, on_step=True)
+                
+                # If deltas are low (e.g., <0.1), model may be ignoring conditioning
         
-    
         return loss
-        
+                
 
     def validation_step(self, batch, batch_idx):
         
@@ -424,6 +462,7 @@ class WaveformTransformer(L.LightningModule):
                         self.log(f"val/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
         
         return loss
+            
 
     def test_step(self, batch, batch_idx):
         # Similar to validation_step
