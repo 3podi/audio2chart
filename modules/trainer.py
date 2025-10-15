@@ -42,8 +42,6 @@ class NotesTransformer(L.LightningModule):
         # Metrics
         self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
         self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
-        self.train_f1 = MulticlassF1Score(num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1, average="macro")
-        self.val_f1 = MulticlassF1Score(num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1, average="macro")
 
         # For perplexity calculation
         self.save_hyperparameters()
@@ -68,13 +66,11 @@ class NotesTransformer(L.LightningModule):
         
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
-        f1 = self.train_f1(preds.view(-1), targets_flat)
         perplexity = torch.exp(loss)
         
         # Log metrics
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("train/f1", f1, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
@@ -142,13 +138,11 @@ class NotesTransformer(L.LightningModule):
         
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
-        f1 = self.val_f1(preds.view(-1), targets_flat)
         perplexity = torch.exp(loss)
         
         # Log metrics
         self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("val/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("val/f1", acc, on_step=True, on_epoch=True, prog_bar=True)
         self.log("val/perplexity", perplexity, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
@@ -225,11 +219,9 @@ class NotesTransformer(L.LightningModule):
     def on_train_epoch_end(self):
         # Reset metrics at the end of each epoch
         self.train_accuracy.reset()
-        self.train_f1.reset()
 
     def on_validation_epoch_end(self):
         self.val_accuracy.reset()
-        self.val_f1.reset()
 
 
 ###############################

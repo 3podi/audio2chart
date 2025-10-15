@@ -504,6 +504,9 @@ class ChunkedWaveformDataset(Dataset):
                 if filtered:
                     note_times, note_values, note_durations = map(list, zip(*filtered))
                     note_times = [(t - start_seconds) / self.window_seconds for t in note_times]
+                    note_times = [note_times[0]] + [
+                        note_times[i] - note_times[i - 1] for i in range(1, len(note_times))
+                    ]
                 else:
                     note_times, note_values, note_durations = [], [], []
 
