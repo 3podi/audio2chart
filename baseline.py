@@ -12,6 +12,29 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
+import numpy as np
+import torch
+import os
+
+def set_seed_everything(seed: int = 42):
+    """
+    Sets the random seed for reproducibility across:
+      - Python's `random`
+      - NumPy
+      - PyTorch
+      - PyTorch Lightning
+    """
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    # Lightning built-in helper
+    L.seed_everything(seed, workers=True)
+
+    print(f"[Seed] Global seed set to {seed}")
 
 class LogGradientNorm(L.pytorch.callbacks.Callback):
     """
@@ -28,6 +51,9 @@ class LogGradientNorm(L.pytorch.callbacks.Callback):
 
 @hydra.main(version_base=None, config_path="configs",config_name="text")
 def main(config: DictConfig):
+
+    #Set seed
+    set_seed_everything(config.seed)
 
     # Wandb
     wandb_config = OmegaConf.to_container(
@@ -59,7 +85,6 @@ def main(config: DictConfig):
     wandb_logger = WandbLogger(log_model="all")
 
     # Data
-    random.seed(42) 
     chart_files = find_chart_files(root_folder=config.root_folder)
     random.shuffle(chart_files)
 
@@ -88,7 +113,7 @@ def main(config: DictConfig):
     # Model
     model = NotesTransformer(
         pad_token_id=vocab['<PAD>'],
-        eos_token_id=['<eos>'],
+        eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
         cfg_optimizer=config.optimizer
@@ -118,9 +143,9 @@ def main(config: DictConfig):
         precision = config.precision
         #default_root_dir=checkpoint_path,
         #check_val_every_n_epoch=cfg["val_frequency"],
-        #num_sanity_val_steps=0,
+        num_sanity_val_steps=0,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
-        #gradient_clip_val=1.0,
+        gradient_clip_val=1.0,
     )
 
     trainer.fit(
