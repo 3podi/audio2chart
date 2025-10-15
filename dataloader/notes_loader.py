@@ -168,15 +168,6 @@ def chart_collate_fn(batch, bos_token, eos_token, pad_token=-100, max_length=512
         padded_batch.append(padded_tokens)
         attention_masks.append(attention_mask)
         diff_batch.append(diff)
-        
-        # Keep metadata for reference
-        #metadata = {
-        #    'file_path': sample.get('file_path', ''),
-        #    'section_name': sample.get('section_name', ''),
-        #    'song_metadata': sample.get('song_metadata', {}),
-        #    'original_length': len(tokens)
-        #}
-        #metadata_batch.append(metadata)
     
     # Convert to tensors
     input_ids = torch.tensor(padded_batch, dtype=torch.long)
