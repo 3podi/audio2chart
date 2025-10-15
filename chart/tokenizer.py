@@ -55,7 +55,11 @@ class SimpleTokenizerGuitar():
                 # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
                 #if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: #No perche potrebbe esserci [1,1,3], fix: sort(set()) -> in un tick puo solo esserci un tipo di nota
                 #    seq_notes = [seq_notes[0]]
-                mapped = self.mapping_noteseqs2int.get(tuple(sorted(set(seq_notes))), None)
+                seq_notes = sorted(set(seq_notes))
+                if self.exclude_open_chords:
+                    if len(seq_notes) > 1 and seq_notes[-1] == 7:
+                        seq_notes = seq_notes[:-1]
+                mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
                 if mapped is None:
                     raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
@@ -90,9 +94,11 @@ class SimpleTokenizerGuitar():
         # Flush last group
         if last_tick is not None and seq_notes:
             # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
-            if len(seq_notes) > 1 and len(set(seq_notes)) <= 1: 
-                seq_notes = [seq_notes[0]]
-            mapped = self.mapping_noteseqs2int.get(tuple(sorted(seq_notes)), None)
+            seq_notes = sorted(set(seq_notes))
+            if self.exclude_open_chords:
+                if seq_notes[-1] == 7:
+                    seq_notes = seq_notes[:-1]
+            mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
             if mapped is None:
                 raise ValueError(f"Unknown note sequence {seq_notes} at tick {last_tick}")
 
