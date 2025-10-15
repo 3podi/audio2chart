@@ -35,10 +35,6 @@ class ChartChunksDataset(Dataset):
                 proc.read_chart(path)
                 notes = proc.notes
                 # Text like task we dont need to handle time
-                #bpm_events = proc.synctrack
-                #resolution = int(proc.song_metadata['Resolution'])
-                #offset = float(proc.song_metadata['Offset'])
-                #self.prepare_chunks(notes, bpm_events,resolution, offset)
                 self.prepare_chunks(notes)
             except Exception as e:
                 print(f"Error processing chart {path}: {e}")
