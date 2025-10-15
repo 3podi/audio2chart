@@ -5,27 +5,26 @@ import timeit
 
 
 class SimpleTokenizerGuitar():
-    def __init__(self):
+    def __init__(self, exclude_open_chords=True):
 
-        # Define a mapping between pressed lanes and note index
+        self.exclude_open_chords = exclude_open_chords
+        # Define a mapping between pressed lanes (5 fret + open) and note index
+        # If exclude_open_chords is True, exclude every chord with 7 except 7 alone
 
-        indices = [i for i in range(5)] + [7] # 5 fret + open
+        indices = [i for i in range(5)]
+        if not exclude_open_chords:
+            indices = indices [7]
         all_combinations = []
         for r in range(1, len(indices) + 1):
             combos = list(itertools.combinations(indices, r))
             all_combinations.extend(combos)
 
         self.mapping_noteseqs2int = {v:idx for idx, v in enumerate(all_combinations)}
-        #self.mapping_noteseqs2int[(7,)] = len(all_combinations) # Open note: key 31
+        if self.exclude_open_chords:
+            self.mapping_noteseqs2int[(7,)] = len(all_combinations)
         self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
-        #print(self.mapping_noteseqs2int)
-    
-    def remove_keys(self, useless_keys):
 
-        for key in useless_keys:
-            self.mapping_noteseqs2int.pop(key)
-        self.reverse_map = {v: k for k, v in self.mapping_noteseqs2int.items()}
-    
+
     def encode(self, note_list):
         encoded_notes = []
         last_tick = None
