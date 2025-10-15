@@ -96,7 +96,7 @@ class SimpleTokenizerGuitar():
             # Handle mistake case, multiple identical notes at same tick (it happens with [3,3])
             seq_notes = sorted(set(seq_notes))
             if self.exclude_open_chords:
-                if seq_notes[-1] == 7:
+                if len(seq_notes) > 1 and seq_notes[-1] == 7:
                     seq_notes = seq_notes[:-1]
             mapped = self.mapping_noteseqs2int.get(tuple(seq_notes), None)
             if mapped is None:
