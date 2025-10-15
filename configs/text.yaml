@@ -4,4 +4,5 @@ defaults:
   - _self_
 
 
+seed: 42
 tags: [text, notes, baseline]
