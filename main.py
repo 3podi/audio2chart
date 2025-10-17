@@ -174,6 +174,7 @@ def main(config: DictConfig):
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
         window_seconds=config.window_seconds,
+        sample_rate=config.sample_rate,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
@@ -189,6 +190,7 @@ def main(config: DictConfig):
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
         window_seconds=config.window_seconds,
+        sample_rate=config.sample_rate,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
