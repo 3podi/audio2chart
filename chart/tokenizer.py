@@ -178,30 +178,32 @@ class SimpleTokenizerGuitar():
         """
 
         assert isinstance(pad_token_id, int), 'Pad token id must be an int'
-
         if len(tokens_list) != len(time_list):
             raise ValueError("tokens and times_sec must have the same length")
 
-        # Compute relative times and check min delta (among all pairs, for collision safety)
-        rel_times = [t - start_time for t in time_list]
-        min_dt = min_delta(time_list)
         grid_s = grid_ms / 1000.0
-        if min_dt < grid_s: 
-            raise ValueError("Min dt too short will cause collision in discretization")
-
         assert int(window_seconds%grid_s)==0 , 'Time window must be multiple of time resolution'
+        
+        # Compute relative times and check min delta (among all pairs, for collision safety)
+        # It could be a time window with no tokens
+        rel_times = [t - start_time for t in time_list]
+        if len(rel_times) > 1:
+            min_dt = min_delta(time_list)
+            if min_dt < grid_s: 
+                raise ValueError("Min dt too short will cause collision in discretization")
+
         n_steps = int(window_seconds / grid_s)  # Total bins in the window
         grid = [pad_token_id] * n_steps
-
+         
         # Round each relative time to nearest grid step and place token if in bounds
         for token, rel_t in zip(tokens_list, rel_times):
             if rel_t < 0:
                 print('Warning: Got value less than zero while discretizing time')
                 continue
             idx = int(round(rel_t / grid_s))
-            if 0 <= idx < len(grid):
+            if 0 <= idx < len(grid): #with < a note exactly at rel_time=window_seconds is excluded
                 grid[idx] = token
-            if idx >= len(grid):
+            if idx > len(grid):
                 print('Warning: Got a token that falls outside the discretized time window')
 
         return grid

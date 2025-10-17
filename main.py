@@ -118,6 +118,7 @@ def main(config: DictConfig):
     run_name = (
         f"{config.model.name}_"
         #f"{config.root_folder}_"
+        f"ws{config.window_seconds}_"
         f"grid{config.grid_ms}_"
         f"seq{config.max_length}_"
         f"d{config.model.transformer.d_model}_"

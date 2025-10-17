@@ -689,7 +689,8 @@ def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_to
         input_values = inputs["input_values"]  # Shape: [1, channels=1, sequence_length]
         padding_mask = inputs["padding_mask"]  # Shape: [1, sequence_length]
         note_values = [bos_token] + sample["note_values"] + [eos_token]
-
+        
+        #print('Note values len: ', len(note_values))
 
         batch_audio.append(input_values.squeeze(0))
         batch_padding_mask.append(padding_mask.squeeze(0))
