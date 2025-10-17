@@ -1,8 +1,8 @@
-name: EXP_CODEC
+name: EXP_ENCODEC_24
 
 #Seanet encoder config
 encoder:
-  _target_: modules.models2.Encodec
+  _target_: modules.models3.Encodec
 
 #Transformer Decocer config
 transformer:
@@ -11,10 +11,10 @@ transformer:
   # --- Model dimensions ---
   d_model: 512                
   d_ff: 2048                  
-  n_heads: 4                  
+  n_heads: 8                  
   num_kv_heads: 2
   n_layers: 8      
-  dropout: 0.0               
+  dropout: 0.2               
 
   use_flash: true            
   conditional: false           # If true, expects class embeddings

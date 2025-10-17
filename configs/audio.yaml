@@ -11,4 +11,11 @@ optimizer:
 data_split_folder: null
 window_seconds: 30
 
+is_discrete: true
+augment: false
+
+grid_ms: 20
+
+seed: 42
+
 tags: [audio]
