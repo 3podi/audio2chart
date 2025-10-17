@@ -160,32 +160,52 @@ class SimpleTokenizerGuitar():
         return convert_notes_to_seconds(notes, bpm_events, resolution, offset)
 
 
-    def discretize_time(self, time_list, tokens_list, pad_token_id, grid_ms, window_seconds):
+    def discretize_time(self, time_list, tokens_list, pad_token_id, grid_ms, window_seconds, start_time=0.0):
         """
-        Map tokens to a time-grid.
+        Map tokens to a time-grid, discretized relative to a given start time.
+        
+        Parameters:
+        - time_list: List of float timestamps (in seconds) for each token.
+        - tokens_list: List of corresponding tokens.
+        - pad_token_id: Integer ID used for padding empty grid slots.
+        - grid_ms: Grid resolution in milliseconds (e.g., 10 for 10ms bins).
+        - window_seconds: Total window duration in seconds to cover with the grid.
+        - start_time: Float start timestamp (in seconds); times are relative to this.
+        
+        The function computes relative times as (t - start_time), rounds them to the nearest
+        grid step, and places tokens on the grid. Times before start_time or beyond the window
+        are ignored/clipped as needed.
         """
 
         assert isinstance(pad_token_id, int), 'Pad token id must be an int'
-        
+
         if len(tokens_list) != len(time_list):
             raise ValueError("tokens and times_sec must have the same length")
 
+        # Compute relative times and check min delta (among all pairs, for collision safety)
+        rel_times = [t - start_time for t in time_list]
         min_dt = min_delta(time_list)
-        if min_dt < grid_ms / 1000:
+        grid_s = grid_ms / 1000.0
+        if min_dt < grid_s: 
             raise ValueError("Min dt too short will cause collision in discretization")
 
-        grid_s = grid_ms / 1000.0
-        n_steps = int(window_seconds / grid_s)
-
+        assert window_seconds%grid_s==0 , 'Time window must be multiple of time resolution'
+        n_steps = int(window_seconds / grid_s)  # Total bins in the window
         grid = [pad_token_id] * n_steps
 
-        # Round each token time to nearest grid step
-        for token, t in zip(tokens_list, time_list):
-            idx = int(round(t / grid_s))
-            if idx < len(grid):
+        # Round each relative time to nearest grid step and place token if in bounds
+        for token, rel_t in zip(tokens_list, rel_times):
+            if rel_t < 0:
+                print('Warning: Got value less than zero while discretizing time')
+                continue
+            idx = int(round(rel_t / grid_s))
+            if 0 <= idx < len(grid):
                 grid[idx] = token
+            if idx >= len(grid):
+                print('Warning: Got a token that falls outside the discretized time window')
 
         return grid
+
 
 
 def min_delta(times_sec):

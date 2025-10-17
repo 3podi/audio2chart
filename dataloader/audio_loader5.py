@@ -467,13 +467,14 @@ class ChunkedWaveformDataset(Dataset):
                 time_list = [note[0] for note in filtered]
                 tokens_list = [note[1] for note in filtered]
                 
-                #TODO: introduce function with start_seconds
+                
                 grid = self.tokenizer.discretize_time(
                             time_list, 
                             tokens_list, 
                             self.pad_token, #change this if starting using non equal length discretized seqs
                             grid_ms=self.grid_ms, 
-                            window_seconds=self.window_seconds
+                            window_seconds=self.window_seconds,
+                            start_time=start_seconds
                         )
                 
                 diff = [-1] if not self.conditional else [
