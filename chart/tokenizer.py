@@ -171,7 +171,7 @@ class SimpleTokenizerGuitar():
             raise ValueError("tokens and times_sec must have the same length")
 
         min_dt = min_delta(time_list)
-        if min_dt < grid_ms / 2000:
+        if min_dt < grid_ms / 1000:
             raise ValueError("Min dt too short will cause collision in discretization")
 
         grid_s = grid_ms / 1000.0
