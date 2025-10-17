@@ -1,5 +1,6 @@
 import torch.multiprocessing as mp
 mp.set_start_method('spawn', force=True)
+from transformers import AutoProcessor
 
 import time
 import logging
@@ -209,7 +210,8 @@ class ChunkedWaveformDataset(Dataset):
         precomputed_windows: bool = False,       
         decode_to_raw_on_init: bool = False,     
         raw_dir: str = "raw_audio",              # where to store when converting
-        is_discrete: bool = False
+        is_discrete: bool = False,
+        grid_ms: int = 20
     ):
         self.data = data
         self.bos_token = bos_token
@@ -233,6 +235,7 @@ class ChunkedWaveformDataset(Dataset):
         self.decode_to_raw_on_init = decode_to_raw_on_init
         self.raw_dir = raw_dir
         self.is_discrete = is_discrete
+        self.grid_ms = grid_ms
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
         self.music_augmenter = MusicAugmenter(augment=augment)
@@ -482,8 +485,8 @@ class ChunkedWaveformDataset(Dataset):
                             time_list, 
                             tokens_list, 
                             self.pad_token, #change this if starting using non equal length discretized seqs
-                            grid_ms=20, 
-                            window_seconds=30
+                            grid_ms=self.grid_ms, 
+                            window_seconds=self.window_seconds
                         )
                 
                 diff = [-1] if not self.conditional else [
@@ -615,7 +618,7 @@ class ChunkedWaveformDataset(Dataset):
 # Collator
 # --------------------
 
-def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool) -> Dict:
+def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool, processor) -> Dict:
     flat_batch = [sample for sublist in batch for sample in sublist]
     if not flat_batch:
         return {}
@@ -625,11 +628,20 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
         max_length
     )
 
-    batch_audio, batch_note_values, batch_note_times, batch_note_durations = [], [], [], []
+    batch_input_values, batch_padding_mask, batch_note_values, batch_note_times, batch_note_durations = [], [], [], [], []
     attention_masks, batch_diff = [], []
 
     for sample in flat_batch:
         audio = sample['audio']
+        #print('audio shape in collate: ', audio.shape)
+        inputs = processor(
+            raw_audio=audio.squeeze(),
+            sampling_rate=processor.sampling_rate,
+            return_tensors='pt'
+        )
+        input_values = inputs["input_values"]  # Shape: [1, channels=1, sequence_length]
+        padding_mask = inputs["padding_mask"]  # Shape: [1, sequence_length]
+
         note_times = [0.0] + sample["note_times"] + [1.0]
         note_durations = [0.0] + sample["note_durations"] + [0.0]
         note_values = [bos_token] + sample["note_values"] + [eos_token]
@@ -648,15 +660,20 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
         attn_len = seq_len - 1
         attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
 
-        batch_audio.append(audio)
+        #batch_audio.append(audio)
         batch_note_values.append(padded_values)
+        batch_input_values.append(input_values.squeeze(0))  # Shape: [channels=1, sequence_length]
+        batch_padding_mask.append(padding_mask.squeeze(0))  # Shape: [sequence_length]
+        
         batch_note_times.append(padded_times)
         batch_note_durations.append(padded_durations)
         attention_masks.append(attention_mask)
         batch_diff.append(sample["cond_diff"])
 
+
     return {
-        "audio": torch.stack(batch_audio, dim=0).float(),
+        "input_values": torch.stack(batch_input_values, dim=0).float(),  # Shape: [batch_size, channels=1, sequence_length]
+        "padding_mask": torch.stack(batch_padding_mask, dim=0).long(),  # Shape: [batch_size, sequence_length]
         "note_values": torch.tensor(batch_note_values, dtype=torch.long),
         "note_times": torch.tensor(batch_note_times, dtype=torch.float),
         "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
@@ -665,25 +682,37 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
     }
 
 
-def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_token: int, conditional: bool) -> Dict:
+
+def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_token: int, conditional: bool, processor) -> Dict:
     flat_batch = [sample for sublist in batch for sample in sublist]
 
 
     batch_audio, batch_note_values = [], []
     batch_diff = []
+    batch_padding_mask = []
 
     for sample in flat_batch:
         audio = sample['audio']
+        #print('audio shape in collate: ', audio.shape)
+        inputs = processor(
+            raw_audio=audio.squeeze(),
+            sampling_rate=processor.sampling_rate,
+            return_tensors='pt'
+        )
+        input_values = inputs["input_values"]  # Shape: [1, channels=1, sequence_length]
+        padding_mask = inputs["padding_mask"]  # Shape: [1, sequence_length]
         note_values = [bos_token] + sample["note_values"] + [eos_token]
 
 
-        batch_audio.append(audio)
+        batch_audio.append(input_values.squeeze(0))
+        batch_padding_mask.append(padding_mask.squeeze(0))
         batch_note_values.append(note_values)
         batch_diff.append(sample["cond_diff"])
     
     #print('Collator audio shape: ', torch.stack(batch_audio,dim=0).shape)
     return {
-        "audio": torch.stack(batch_audio, dim=0).float(),
+        "input_values": torch.stack(batch_audio, dim=0).float(),
+        "padding_mask": torch.stack(batch_padding_mask, dim=0).long(),  # Shape: [batch_size, sequence_length]
         "note_values": torch.tensor(batch_note_values, dtype=torch.long),
         "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
     }
@@ -695,13 +724,14 @@ class AudioChartCollator:
         self.pad_token = pad_token
         self.max_length = max_length
         self.conditional = conditional
+        self.processor = AutoProcessor.from_pretrained("facebook/encodec_24khz")
 
         if is_discrete:
             self._collate_fn = _collate_batch_impl_discrete
-            self._args = (bos_token, eos_token, conditional)
+            self._args = (bos_token, eos_token, conditional, self.processor)
         else:
             self._collate_fn = _collate_batch_impl
-            self._args = (bos_token, eos_token, pad_token, max_length, conditional)
+            self._args = (bos_token, eos_token, pad_token, max_length, conditional, self.processor)
 
 
     def __call__(self, batch: List[List[Dict]]) -> Dict:
@@ -731,7 +761,8 @@ def create_chunked_audio_chart_dataloader(
     decode_to_raw_on_init: bool = False,
     raw_dir: str = "raw_audio",
     augment: bool = False,
-    is_discrete: bool = False
+    is_discrete: bool = False,
+    grid_ms: int =  20
 ) -> Tuple[DataLoader, Dict]:
     """
     High-performance dataloader factory with all optimizations.
@@ -780,7 +811,8 @@ def create_chunked_audio_chart_dataloader(
         precomputed_windows=precomputed_windows,
         decode_to_raw_on_init=decode_to_raw_on_init,
         raw_dir=raw_dir,
-        is_discrete=is_discrete
+        is_discrete=is_discrete,
+        grid_ms=grid_ms
     )
 
     print(f"[INFO] Total items: {len(dataset)}, chunk_size={dataset.chunk_size}, workers={num_workers}")
