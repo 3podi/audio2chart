@@ -552,11 +552,18 @@ class WaveformTransformerDiscrete(L.LightningModule):
             pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
             eos_token_id=self.eos_token_id, # useless, TODO:delete
         )
+        #self.audio_encoder = instantiate(
+        #    cfg_model.encoder,
+        #    vocab_size=None,
+        #    pad_token_id=pad_token_id, # is passed to the transformer
+        #)
         self.audio_encoder = instantiate(
             cfg_model.encoder,
-            vocab_size=None,
-            pad_token_id=pad_token_id, # is passed to the transformer
         )
+
+        for param in self.audio_encoder.parameters():
+            param.requires_grad = False
+        
 
         # Optimizer
         self.cfg_optimizer = cfg_optimizer
@@ -572,7 +579,9 @@ class WaveformTransformerDiscrete(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        audio = batch.get('audio', None)
+        audio = batch.get('input_values', None)
+        #print('Audio shape in forward: ', audio.shape)
+        padding_mask = batch.get('padding_mask', None)
         x = batch.get('note_values', None)
         class_ids = batch.get('cond_diff', None)
 
@@ -586,7 +595,9 @@ class WaveformTransformerDiscrete(L.LightningModule):
 
         # Forward pass
         #print('Audio shape: ', audio.squeeze().shape)
-        audio_encoded = self.audio_encoder(audio.contiguous())
+        with torch.no_grad():
+            audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=True)
+            #audio_encoded = self.audio_encoder(audio.contiguous())
         #print('Input tokens shape: ', input_tokens.shape)
         #print('Encoded shape: ', audio_encoded.shape)
         logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
@@ -674,7 +685,8 @@ class WaveformTransformerDiscrete(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        audio = batch.get('audio', None)
+        audio = batch.get('input_values', None)
+        padding_mask = batch.get('padding_mask', None)
         x = batch.get('note_values', None)
         class_ids = batch.get('cond_diff', None)
 
@@ -682,7 +694,9 @@ class WaveformTransformerDiscrete(L.LightningModule):
         target_tokens = x[:, 1:].contiguous()
 
         # Forward pass
-        audio_encoded = self.audio_encoder(audio.contiguous())
+        with torch.no_grad():
+            audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=True)
+            #audio_encoded = self.audio_encoder(audio.contiguous())
         logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
 
         logits_flat = logits.reshape(-1, self.vocab_size)
@@ -774,11 +788,11 @@ class WaveformTransformerDiscrete(L.LightningModule):
                 'lr': self.cfg_optimizer.lr,
                 'weight_decay': self.cfg_optimizer.weight_decay
             },
-            {
-                'params': self.audio_encoder.parameters(),
-                'lr': self.cfg_optimizer.lr_audio,
-                'weight_decay': self.cfg_optimizer.weight_decay
-            }
+            #{
+            #    'params': self.audio_encoder.parameters(),
+            #    'lr': self.cfg_optimizer.lr_audio,
+            #    'weight_decay': self.cfg_optimizer.weight_decay
+            #}
         ], betas=(0.9, 0.95))
 
         # Single scheduler for the combined optimizer
