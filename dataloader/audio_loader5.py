@@ -112,7 +112,7 @@ DIFF_MAPPING = {
     'Easy': 3
 }
 
-MAX_AUDIO_SAMPLES = 10 * 60 * 16000  # 10 minutes @ 16kHz
+MAX_AUDIO_SAMPLES = 10 * 60 * 24000  # 10 minutes @ 24kHz
 MAX_BYTES = MAX_AUDIO_SAMPLES * 2    # 16-bit = 2 bytes per sample
 
 # --------------------
@@ -158,17 +158,14 @@ def load_opus_ffmpeg(path: str, target_sr: int = 16000, timeout_seconds: int = 1
 def load_raw_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
     """
     Load the ENTIRE pre-decoded raw 16-bit PCM audio (no header).
-    Must be preprocessed with ffmpeg: ffmpeg -i input.opus -f s16le -ar 16000 -ac 1 output.raw
+    Must be preprocessed with ffmpeg: ffmpeg -i input.opus -f s16le -ar target_sr -ac 1 output.raw
     Returns: [1, T] tensor, sample_rate
     """
     try:
         with open(path, 'rb') as f:
             file_size = os.path.getsize(path)
-            # If file is smaller than max, read entire file
             if file_size <= MAX_BYTES:
                 buf = f.read()
-                #if len(buf) % 2 != 0:
-                #    buf = buf[:-1]  # Safety: ensure even byte count (rare)
             else:
                 # ONLY READ FIRST MAX_BYTES — skip rest, avoid long audio
                 buf = f.read(MAX_BYTES)
@@ -238,7 +235,7 @@ class ChunkedWaveformDataset(Dataset):
         self.grid_ms = grid_ms
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
-        self.music_augmenter = MusicAugmenter(augment=augment)
+        self.music_augmenter = MusicAugmenter(augment=augment, sample_rate=self.sample_rate)
 
         # Pre-cache chart data (CRITICAL optimization)
         self.chart_cache: Dict[Tuple[str, str], Tuple[List, List, int, float]] = {}
@@ -349,7 +346,7 @@ class ChunkedWaveformDataset(Dataset):
         for item in sample_files:
             try:
                 if self.use_predecoded_raw:
-                    size_bytes = item.get("length_samples", 16000*60) * 2  # 16-bit = 2 bytes/sample
+                    size_bytes = item.get("length_samples", self.sample_rate*60) * 2  # 16-bit = 2 bytes/sample
                 else:
                     waveform, _ = load_opus_ffmpeg(item["audio_path"], self.sample_rate, timeout_seconds=30)
                     size_bytes = waveform.element_size() * waveform.numel()
@@ -414,18 +411,6 @@ class ChunkedWaveformDataset(Dataset):
             print(f"Worker {self._get_worker_id()}: Failed to load {audio_path}: {e}")
             return torch.zeros(1, self.num_samples), self.sample_rate
 
-    def _augment_old(self, waveform: torch.Tensor) -> torch.Tensor:
-        if not self.augment:
-            return waveform
-        if random.random() < 0.5:
-            gain_db = random.uniform(-6, 6)
-            waveform = waveform * (10 ** (gain_db / 20))
-        if random.random() < 0.5:
-            noise_amp = 0.005 * waveform.abs().max() * random.random()
-            waveform = waveform + noise_amp * torch.randn_like(waveform)
-        if random.random() < 0.3:
-            waveform = -waveform
-        return waveform
 
     def _augment(self, waveform):
         return self.music_augmenter._augment(waveform)
@@ -447,7 +432,7 @@ class ChunkedWaveformDataset(Dataset):
             # Shouldn't happen due to max_start logic, but just in case
             chunk = chunk[:, :self.num_samples]
 
-        # Now chunk is guaranteed to be [1, self.num_samples]
+        # Chunk is guaranteed to be [1, self.num_samples]
         assert chunk.shape[-1] == self.num_samples, f"Chunk shape {chunk.shape} != {self.num_samples}"
 
         if self.augment:
@@ -474,13 +459,15 @@ class ChunkedWaveformDataset(Dataset):
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
             #logger.info(f"[WORKER {worker_id}] Formatted seconds, got {len(tokenized_chart)} events", extra={'worker_id': worker_id})
-
+            filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
+            
             if self.is_discrete:
 
                 #Extract time and token lists
-                time_list = [note[0] for note in tokenized_chart]
-                tokens_list = [note[1] for note in tokenized_chart]
-
+                time_list = [note[0] for note in filtered]
+                tokens_list = [note[1] for note in filtered]
+                
+                #TODO: introduce function with start_seconds
                 grid = self.tokenizer.discretize_time(
                             time_list, 
                             tokens_list, 
@@ -501,7 +488,6 @@ class ChunkedWaveformDataset(Dataset):
 
             else:
 
-                filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
                 #logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
 
                 if filtered:
@@ -745,6 +731,7 @@ def create_chunked_audio_chart_dataloader(
     data: List[Dict],
     tokenizer,
     window_seconds: float = 10.0,
+    sample_rate: int = 16000,
     difficulties: List[str] = ['Expert'],
     instruments: List[str] = ['Single'],
     batch_size: int = 32,
@@ -800,6 +787,7 @@ def create_chunked_audio_chart_dataloader(
         difficulties=difficulties,
         instruments=instruments,
         window_seconds=window_seconds,
+        sample_rate=sample_rate,
         num_pieces=num_pieces,
         max_cache_gb=max_cache_gb,
         chunk_size=chunk_size,
