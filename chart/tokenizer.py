@@ -189,7 +189,7 @@ class SimpleTokenizerGuitar():
         if min_dt < grid_s: 
             raise ValueError("Min dt too short will cause collision in discretization")
 
-        assert window_seconds%grid_s==0 , 'Time window must be multiple of time resolution'
+        assert int(window_seconds%grid_s)==0 , 'Time window must be multiple of time resolution'
         n_steps = int(window_seconds / grid_s)  # Total bins in the window
         grid = [pad_token_id] * n_steps
 
