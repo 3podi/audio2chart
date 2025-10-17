@@ -6,7 +6,7 @@ import random
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
-from modules.trainer import WaveformTransformer
+from modules.trainer import WaveformTransformerDiscrete
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -45,7 +45,7 @@ def set_seed_everything(seed: int = 42):
 
     print(f"[Seed] Global seed set to {seed}")
 
-def validate_dataset(data, difficulties, instruments):
+def validate_dataset(data, difficulties, instruments, grid_ms):
     valid_items = []
     chart_processor = ChartProcessor(difficulties, instruments)
     tokenizer = SimpleTokenizerGuitar()
@@ -70,7 +70,7 @@ def validate_dataset(data, difficulties, instruments):
 
             min_delta = min(time_deltas)
 
-            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > 0.01:
+            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > grid_ms/1000.0 :
                 valid_items.append(item)
         except Exception as e:
             print(f"Skipping invalid chart: {item['chart_path']} - {e}")
@@ -106,24 +106,25 @@ def main(config: DictConfig):
 
     encoder_cfg = config.model.encoder
     # Compact string for ratios
-    ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
+    #ratios_str = "-".join(str(r) for r in encoder_cfg.ratios)
     # Build run name
-    run_name = (
-        f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
-        f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
-        f"_dim{encoder_cfg.dimension}"
-    )
+    #run_name = (
+    #    f"enc_r{ratios_str}_d{encoder_cfg.dilation_base}"
+    #    f"_l{encoder_cfg.n_residual_layers}_c{encoder_cfg.base_channels}"
+    #    f"_dim{encoder_cfg.dimension}"
+    #)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = (
         f"{config.model.name}_"
         #f"{config.root_folder}_"
+        f"grid{config.grid_ms}_"
         f"seq{config.max_length}_"
         f"d{config.model.transformer.d_model}_"
         f"n{config.model.transformer.n_layers}_"
         f"lr{config.optimizer.lr}_"
         f"bs{config.batch_size}_"
-        f"{run_name}_"
+        #f"{run_name}_"
         f"{timestamp}"
     )
 
@@ -167,8 +168,8 @@ def main(config: DictConfig):
 
     tokenizer = SimpleTokenizerGuitar()
     
-    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list))
-    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list))
+    train_files = validate_dataset(train_files, list(config.diff_list), list(config.inst_list),config.grid_ms)
+    val_files = validate_dataset(val_files, list(config.diff_list), list(config.inst_list), config.grid_ms)
 
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
@@ -181,7 +182,8 @@ def main(config: DictConfig):
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
         is_discrete=config.is_discrete,
-        augment=config.augment
+        augment=config.augment,
+        grid_ms=config.grid_ms
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -195,14 +197,15 @@ def main(config: DictConfig):
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
         is_discrete=config.is_discrete,
-        augment=False
+        augment=False,
+        grid_ms=config.grid_ms
     )
     
     print('Length train dataloader: ', len(train_dataloader))
     print('Length val dataloader: ', len(val_dataloader))
 
     # Model
-    model = WaveformTransformer(
+    model = WaveformTransformerDiscrete(
         pad_token_id=vocab['<PAD>'],
         eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
@@ -223,7 +226,7 @@ def main(config: DictConfig):
     #)
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.001, patience=5, verbose=False, mode="max")
+    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.0001, patience=5, verbose=False, mode="max")
     track_grad_norm = LogGradientNorm()
 
     # Trainer
