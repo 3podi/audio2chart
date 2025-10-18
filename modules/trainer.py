@@ -42,6 +42,8 @@ class NotesTransformer(L.LightningModule):
         
         # Metrics
         if is_discrete:
+            self.class_weights = torch.ones(self.vocab_size)
+            self.class_weights[self.pad_token_id] = 0.1
             self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
             self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
         else:
