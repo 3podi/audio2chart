@@ -1,95 +1,25 @@
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
-import random
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
 from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
 from modules.trainer import WaveformTransformerDiscrete
+from modules.utils_train import set_seed_everything, LogGradientNorm, validate_dataset
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
-import torch
-import numpy as np
-import os
+
 
 #from transformers import AutoProcessor, EncodecModel
 from chart.tokenizer import SimpleTokenizerGuitar
-from chart.chart_processor import ChartProcessor
-
 import json
 
-MAX_NOTES = 5000
 
-def set_seed_everything(seed: int = 42):
-    """
-    Sets the random seed for reproducibility across:
-      - Python's `random`
-      - NumPy
-      - PyTorch
-      - PyTorch Lightning
-    """
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-
-    # Lightning built-in helper
-    L.seed_everything(seed, workers=True)
-
-    print(f"[Seed] Global seed set to {seed}")
-
-def validate_dataset(data, difficulties, instruments, grid_ms):
-    valid_items = []
-    chart_processor = ChartProcessor(difficulties, instruments)
-    tokenizer = SimpleTokenizerGuitar()
-    for item in data:
-        try:
-            #chart_processor = ChartProcessor(difficulties, instruments)
-            chart_processor.read_chart(chart_path=item["chart_path"], target_sections=item["difficulty"])
-            notes = chart_processor.notes[item["difficulty"]]
-            bpm_events = chart_processor.synctrack
-            resolution = int(chart_processor.song_metadata['Resolution'])
-            offset = float(chart_processor.song_metadata['Offset'])
-
-            tokenized_chart = tokenizer.encode(note_list=notes)
-            tokenized_chart = tokenizer.format_seconds(
-                tokenized_chart, bpm_events, resolution=resolution, offset=offset
-            )
-            
-            time_deltas = []
-            for i in range(1, len(tokenized_chart)):
-                delta = tokenized_chart[i][0] - tokenized_chart[i-1][0]
-                time_deltas.append(delta)
-
-            min_delta = min(time_deltas)
-
-            if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > grid_ms/1000.0 :
-                valid_items.append(item)
-        except Exception as e:
-            print(f"Skipping invalid chart: {item['chart_path']} - {e}")
-    
-    print(f"Filtered dataset: {len(valid_items)}/{len(data)} valid charts")
-    return valid_items
-
-class LogGradientNorm(L.pytorch.callbacks.Callback):
-    """
-    Logs the gradient norm (L2 norm) before the optimizer step (pre-clipping/scaling).
-    """
-    def on_before_optimizer_step(self, trainer: L.Trainer, *args, **kwargs) -> None:
-        total_norm = 0.0
-        for param in trainer.lightning_module.parameters():
-            if param.grad is not None:
-                param_norm = param.grad.detach().norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
-        trainer.lightning_module.log("train/grad_norm", total_norm)
 
 @hydra.main(version_base=None, config_path="configs",config_name="audio")
 def main(config: DictConfig):

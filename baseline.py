@@ -6,48 +6,16 @@ import random
 from dataloader.notes_loader import create_chart_dataloader
 from dataloader.utils_dataloader import find_chart_files
 from modules.trainer import NotesTransformer
+from modules.utils_train import set_seed_everything, LogGradientNorm, validate_dataset
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 import hydra
-import numpy as np
-import torch
-import os
 
-def set_seed_everything(seed: int = 42):
-    """
-    Sets the random seed for reproducibility across:
-      - Python's `random`
-      - NumPy
-      - PyTorch
-      - PyTorch Lightning
-    """
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
 
-    # Lightning built-in helper
-    L.seed_everything(seed, workers=True)
-
-    print(f"[Seed] Global seed set to {seed}")
-
-class LogGradientNorm(L.pytorch.callbacks.Callback):
-    """
-    Logs the gradient norm (L2 norm) before the optimizer step (pre-clipping/scaling).
-    """
-    def on_before_optimizer_step(self, trainer: L.Trainer, *args, **kwargs) -> None:
-        total_norm = 0.0
-        for param in trainer.lightning_module.parameters():
-            if param.grad is not None:
-                param_norm = param.grad.detach().norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
-        trainer.lightning_module.log("train/grad_norm", total_norm)
 
 @hydra.main(version_base=None, config_path="configs",config_name="text")
 def main(config: DictConfig):
@@ -90,6 +58,10 @@ def main(config: DictConfig):
 
     train_charts = chart_files[:int(len(chart_files)*config.validation_split)]
     val_charts = chart_files[int(len(chart_files)*config.validation_split):]
+
+    if config.is_discrete:
+        train_charts = validate_dataset(train_charts, list(config.diff_list), list(config.inst_list),config.grid_ms)
+        val_charts = validate_dataset(val_charts, list(config.diff_list), list(config.inst_list), config.grid_ms)
 
     train_dataloader, vocab = create_chart_dataloader(
         train_charts,
