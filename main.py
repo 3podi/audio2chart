@@ -122,7 +122,7 @@ def main(config: DictConfig):
     val_dataloader, _ = create_audio_chart_dataloader(
         val_files,
         window_seconds=config.window_seconds,
-        sample_rate=config.sample_rate,
+        sample_rate=config.model.sample_rate,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
