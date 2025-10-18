@@ -242,8 +242,8 @@ class SEANetEncoder2d(nn.Module):
             latent sequence (B, D, T_out)
         """
         # Add dummy spatial dimension: (B, C, T) -> (B, C, 1, T)
-        x = x.unsqueeze(2)
-        x = self.model(x)    # (B, D, 1, T_out)
+        x = x.unsqueeze(1)
+        x = self.model(x.unsqueeze(1))    # (B, D, 1, T_out)
         return x#.squeeze(2)  # (B, D, T_out)
 
     def compute_receptive_field(self, sr=16000):
