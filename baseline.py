@@ -98,6 +98,9 @@ def main(config: DictConfig):
         batch_size=config.batch_size,
         max_length=config.max_length,
         conditional=config.model.conditional,
+        is_discrete=config.is_discrete,
+        grid_ms=config.grid_ms,
+        window_seconds=config.window_seconds
     )
 
     val_dataloader, _ = create_chart_dataloader(
@@ -107,6 +110,9 @@ def main(config: DictConfig):
         batch_size=config.batch_size,
         max_length=config.max_length,
         conditional=config.model.conditional,
+        is_discrete=config.is_discrete,
+        grid_ms=config.grid_ms,
+        window_seconds=config.window_seconds
         shuffle=False
     )
 
@@ -116,7 +122,8 @@ def main(config: DictConfig):
         eos_token_id=vocab['<eos>'],
         vocab_size=len(vocab),
         cfg_model=config.model,
-        cfg_optimizer=config.optimizer
+        cfg_optimizer=config.optimizer,
+        is_discrete=config.is_discrete
     )
 
     # Callbacks

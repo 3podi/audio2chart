@@ -19,7 +19,7 @@ from hydra.utils import instantiate
 
 
 class NotesTransformer(L.LightningModule):
-    def __init__(self, pad_token_id, eos_token_id, vocab_size, cfg_model, cfg_optimizer=None):
+    def __init__(self, pad_token_id, eos_token_id, vocab_size, cfg_model, cfg_optimizer=None, is_discrete=False):
         super().__init__()
         
         self.vocab_size = vocab_size
@@ -38,10 +38,15 @@ class NotesTransformer(L.LightningModule):
         )
 
         self.cfg_optimizer = cfg_optimizer
+        self.is_discrete = is_discrete
         
         # Metrics
-        self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
-        self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
+        if is_discrete:
+            self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+            self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size)
+        else:
+            self.train_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
+            self.val_accuracy = Accuracy(task="multiclass", num_classes=self.vocab_size-1, ignore_index=self.vocab_size-1)
 
         # For perplexity calculation
         self.save_hyperparameters()
@@ -62,7 +67,11 @@ class NotesTransformer(L.LightningModule):
         targets_flat = target_tokens.reshape(-1)
         
         # Compute loss
-        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+        if self.is_discrete:
+            weights = self.class_weights.to(logits.device)
+            loss = F.cross_entropy(logits_flat, targets_flat, weight=weights)
+        else:
+            loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
         
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
@@ -72,6 +81,24 @@ class NotesTransformer(L.LightningModule):
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train/perplexity", perplexity, on_step=True, on_epoch=True)
+
+        # Non-pad (non-silence) mask
+        if self.is_discrete:
+            nonpad_mask = targets_flat != self.pad_token_id
+
+            if nonpad_mask.any():
+                nonpad_logits = logits_flat[nonpad_mask]
+                nonpad_targets = targets_flat[nonpad_mask]
+                nonpad_preds = preds[nonpad_mask]
+
+                nonpad_loss = F.cross_entropy(nonpad_logits, nonpad_targets)
+                nonpad_acc = (nonpad_preds == nonpad_targets).float().mean()
+                nonpad_perplexity = torch.exp(nonpad_loss)
+
+                # Log only for monitoring (not backprop)
+                self.log("train/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
+                self.log("train/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
+                self.log("train/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
@@ -134,8 +161,12 @@ class NotesTransformer(L.LightningModule):
         targets_flat = target_tokens.reshape(-1)
         
         # Compute loss
-        loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
-        
+        if self.is_discrete:
+            weights = self.class_weights.to(logits.device)
+            loss = F.cross_entropy(logits_flat, targets_flat, weight=weights)
+        else:
+            loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                
         preds = torch.argmax(logits_flat, dim=-1)
         acc = self.train_accuracy(preds, targets_flat)
         perplexity = torch.exp(loss)
@@ -144,6 +175,24 @@ class NotesTransformer(L.LightningModule):
         self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("val/acc", acc, on_step=True, on_epoch=True, prog_bar=True)
         self.log("val/perplexity", perplexity, on_step=True, on_epoch=True)
+
+        # Non-pad (non-silence) mask
+        if self.is_discrete:
+            nonpad_mask = targets_flat != self.pad_token_id
+
+            if nonpad_mask.any():
+                nonpad_logits = logits_flat[nonpad_mask]
+                nonpad_targets = targets_flat[nonpad_mask]
+                nonpad_preds = preds[nonpad_mask]
+
+                nonpad_loss = F.cross_entropy(nonpad_logits, nonpad_targets)
+                nonpad_acc = (nonpad_preds == nonpad_targets).float().mean()
+                nonpad_perplexity = torch.exp(nonpad_loss)
+
+                # Log only for monitoring (not backprop)
+                self.log("val/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
+                self.log("val/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
+                self.log("val/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:

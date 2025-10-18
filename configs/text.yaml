@@ -3,6 +3,9 @@ defaults:
   - model: notes_transformer
   - _self_
 
+is_discrete: true
+window_seconds: 30
+grid_ms: 20
 
 seed: 42
-tags: [text, notes, baseline]
+tags: [text, notes, baseline, discrete]

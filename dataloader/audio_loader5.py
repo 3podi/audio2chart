@@ -237,7 +237,7 @@ class ChunkedWaveformDataset(Dataset):
         self.chart_processor = ChartProcessor(difficulties, instruments)
         self.music_augmenter = MusicAugmenter(augment=augment, sample_rate=self.sample_rate)
 
-        # Pre-cache chart data (CRITICAL optimization)
+        # Pre-cache chart data
         self.chart_cache: Dict[Tuple[str, str], Tuple[List, List, int, float]] = {}
         print("[INFO] Pre-caching chart metadata...")
         for item in data:

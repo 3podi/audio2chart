@@ -1,6 +1,7 @@
 import os
 from torch.utils.data import Dataset, DataLoader
 import torch
+import math
 from typing import List, Dict, Any, Optional
 
 import sys
@@ -18,12 +19,16 @@ DIFF_MAPPING = {
 }
 
 class ChartChunksDataset(Dataset):
-    def __init__(self, chart_paths, difficulties, instruments, seq_len, conditional=False):
+    def __init__(self, chart_paths, difficulties, instruments, seq_len, conditional=False, is_discrete=False, window_seconds=30, pad_token_id=-1, grid_ms=20):
         
         self.seq_len = seq_len - 2 #Add bos and eos in collate 
         self.chunks = []
         self.chunks_diff = []
         self.conditional = conditional
+        self.is_discrete = is_discrete
+        self.window_seconds = window_seconds
+        self.pad_token_id = pad_token_id
+        self.grid_ms = grid_ms
 
         proc = ChartProcessor(difficulties, instruments)
         self.tokenizer = SimpleTokenizerGuitar()
@@ -34,8 +39,10 @@ class ChartChunksDataset(Dataset):
             try:
                 proc.read_chart(path)
                 notes = proc.notes
-                # Text like task we dont need to handle time
-                self.prepare_chunks(notes)
+                bpm_events = proc.synctrack
+                resolution = int(proc.song_metadata['Resolution'])
+                offset = float(proc.song_metadata['Offset'])                
+                self.prepare_chunks(notes, bpm_events, resolution, offset)
             except Exception as e:
                 print(f"Error processing chart {path}: {e}")
                 n_failed_paths += 1
@@ -43,15 +50,39 @@ class ChartChunksDataset(Dataset):
         
         print(f"Processed {len(chart_paths) - n_failed_paths} charts, failed on {n_failed_paths} paths.")
 
-    def prepare_chunks(self, notes):
+    def prepare_chunks(self, notes, bpm_events, resolution, offset):
         for section_name, note_seq in notes.items():
             encoded_notes = self.tokenizer.encode(note_list=note_seq)
-            encoded_list = [n[1] for n in encoded_notes]
-            chunks = [
-                encoded_list[i:i+self.seq_len]
-                for i in range(0, len(encoded_list) - self.seq_len +1, self.seq_len)
-            ]
-            self.chunks.extend(chunks)
+            
+            if not self.is_discrete:
+                encoded_list = [n[1] for n in encoded_notes]
+                chunks = [
+                    encoded_list[i:i+self.seq_len]
+                    for i in range(0, len(encoded_list) - self.seq_len +1, self.seq_len)
+                ]
+                self.chunks.extend(chunks)
+            else:
+                encoded_notes = self.tokenizer.format_seconds(
+                    encoded_notes, bpm_events, resolution=resolution, offset=offset
+                )
+
+                duration = encoded_list[-1][0]
+                chunks=[]
+                for start_time in range(0,int(math.ceil(duration / self.window_seconds)) * self.window_seconds, self.window_seconds):
+                    filtered = [(t, v, d) for (t, v, d, _) in encoded_notes if start_time <= t < start_time+self.window_seconds]
+                    time_list = [note[0] for note in filtered]
+                    tokens_list = [note[1] for note in filtered]
+                    chunk = self.tokenizer.discretize_time(
+                        time_list,
+                        tokens_list,
+                        self.pad_token_id,
+                        grid_ms=self.grid_ms,
+                        window_seconds=self.window_seconds,
+                        start_time=start_time
+                    )
+                    chunks.append(chunk)
+                self.chunks.extend(chunks)
+
             if self.conditional:
                 diff = [
                     mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in section_name
@@ -75,7 +106,10 @@ def create_chart_dataloader(
         num_workers: int = 4,
         shuffle: bool = True,
         conditional: bool = False,
-        vocab: Optional[Dict] = None
+        vocab: Optional[Dict] = None,
+        is_discrete: bool = False, 
+        window_seconds: int = 30,
+        grid_ms: int = 20
     ):
     """
     Create a DataLoader for chart files with proper batching and tokenization
@@ -88,6 +122,9 @@ def create_chart_dataloader(
         max_length: Maximum sequence length (will pad/truncate to this)
         num_workers: Number of worker processes
         vocab: Custom vocabulary dict, if None will create default
+        is_discrete: Discretize time with time resolution defined by grid_ms, 
+        grid_ms: Time resolution in case of discretization
+        window_seconds: Time used for chunking windows in case of discretization
     """
     
     if vocab is None:
@@ -108,7 +145,17 @@ def create_chart_dataloader(
     )
     
 
-    dataset = ChartChunksDataset(chart_paths, difficulties, instruments, max_length, conditional)
+    dataset = ChartChunksDataset(
+        chart_paths,
+        difficulties,
+        instruments, 
+        max_length, 
+        conditional, 
+        is_discrete, 
+        window_seconds, 
+        pad_token_id=pad_token_id,
+        grid_ms=grid_ms
+    )
     
     dataloader = DataLoader(
         dataset,
