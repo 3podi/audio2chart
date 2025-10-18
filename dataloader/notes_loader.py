@@ -66,7 +66,7 @@ class ChartChunksDataset(Dataset):
                     encoded_notes, bpm_events, resolution=resolution, offset=offset
                 )
 
-                duration = encoded_list[-1][0]
+                duration = encoded_notes[-1][0]
                 chunks=[]
                 for start_time in range(0,int(math.ceil(duration / self.window_seconds)) * self.window_seconds, self.window_seconds):
                     filtered = [(t, v, d) for (t, v, d, _) in encoded_notes if start_time <= t < start_time+self.window_seconds]
