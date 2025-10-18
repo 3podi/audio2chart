@@ -105,7 +105,7 @@ def main(config: DictConfig):
     train_dataloader, vocab = create_audio_chart_dataloader(
         train_files,
         window_seconds=config.window_seconds,
-        sample_rate=config.sample_rate,
+        sample_rate=config.model.sample_rate,
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
@@ -115,7 +115,8 @@ def main(config: DictConfig):
         use_predecoded_raw=True,
         is_discrete=config.is_discrete,
         augment=config.augment,
-        grid_ms=config.grid_ms
+        grid_ms=config.grid_ms,
+        use_processor=config.model.use_processor
     )
 
     val_dataloader, _ = create_audio_chart_dataloader(
@@ -131,7 +132,8 @@ def main(config: DictConfig):
         use_predecoded_raw=True,
         is_discrete=config.is_discrete,
         augment=False,
-        grid_ms=config.grid_ms
+        grid_ms=config.grid_ms,
+        use_processor=config.model.use_processor
     )
     
     print('Length train dataloader: ', len(train_dataloader))

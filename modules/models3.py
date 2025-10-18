@@ -3,7 +3,7 @@ import torch.nn as nn
 from transformers import AutoProcessor, EncodecModel
 
 class Encodec(nn.Module):
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__()
         self.model = EncodecModel.from_pretrained("facebook/encodec_24khz")
         self.codebook_dim = self.model.config.codebook_dim  # 128

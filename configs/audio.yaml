@@ -12,10 +12,8 @@ data_split_folder: null
 window_seconds: 30
 
 is_discrete: true
-augment: false
-
-sample_rate: 24000
 grid_ms: 20
+augment: false
 
 seed: 42
 

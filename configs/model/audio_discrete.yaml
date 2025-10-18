@@ -1,5 +1,9 @@
 name: EXP_DISCR_2_augment
 
+freeze_encoder: false
+use_processor: false
+sample_rate: 16000
+
 #Seanet encoder config
 encoder:
   _target_: modules.models.SEANetEncoder2d

@@ -1,5 +1,9 @@
 name: EXP_ENCODEC_24
 
+freeze_encoder: true
+use_processor: true
+sqmple_rate: 24000
+
 #Seanet encoder config
 encoder:
   _target_: modules.models3.Encodec
