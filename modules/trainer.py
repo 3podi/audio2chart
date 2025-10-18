@@ -39,6 +39,7 @@ class NotesTransformer(L.LightningModule):
 
         self.cfg_optimizer = cfg_optimizer
         self.is_discrete = is_discrete
+        self.pad_token_id = pad_token_id
         
         # Metrics
         if is_discrete:
