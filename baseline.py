@@ -6,7 +6,7 @@ import random
 from dataloader.notes_loader import create_chart_dataloader
 from dataloader.utils_dataloader import find_chart_files
 from modules.trainer import NotesTransformer
-from modules.utils_train import set_seed_everything, LogGradientNorm, validate_dataset
+from modules.utils_train import set_seed_everything, LogGradientNorm, validate_dataset_notes
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -60,8 +60,8 @@ def main(config: DictConfig):
     val_charts = chart_files[int(len(chart_files)*config.validation_split):]
 
     if config.is_discrete:
-        train_charts = validate_dataset(train_charts, list(config.diff_list), list(config.inst_list),config.grid_ms)
-        val_charts = validate_dataset(val_charts, list(config.diff_list), list(config.inst_list), config.grid_ms)
+        train_charts = validate_dataset_notes(train_charts, list(config.diff_list), list(config.inst_list),config.grid_ms)
+        val_charts = validate_dataset_notes(val_charts, list(config.diff_list), list(config.inst_list), config.grid_ms)
 
     train_dataloader, vocab = create_chart_dataloader(
         train_charts,
