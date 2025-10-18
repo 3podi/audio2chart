@@ -108,9 +108,9 @@ def validate_dataset_notes(data, difficulties, instruments, grid_ms):
 
                 if len(notes) > 0 and len(notes) < MAX_NOTES and min_delta > grid_ms/1000.0 :
                     valid_items.append(item)
-                    
+
         except Exception as e:
-            print(f"Skipping invalid chart: {item['chart_path']} - {e}")
+            print(f"Skipping invalid chart: {item} - {e}")
     
     print(f"Filtered dataset: {len(valid_items)}/{len(data)} valid charts")
     return valid_items
