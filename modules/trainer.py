@@ -785,3 +785,34 @@ class WaveformTransformerDiscrete(L.LightningModule):
 
 
 
+    def on_after_backward(self):
+        if self.freeze_encoder:
+            return
+
+        # run only every 100 steps
+        if self.global_step % 100 != 0:
+            return
+
+        total = 0
+        nonzero = 0
+        grad_norm_sum = 0.0
+        max_abs = 0.0
+
+        for p in self.audio_encoder.parameters():
+            if p.grad is None:
+                continue
+            g = p.grad.detach()
+            total += 1
+            if g.abs().sum() != 0:
+                nonzero += 1
+                grad_norm_sum += g.norm().item()
+                max_abs = max(max_abs, g.abs().max().item())
+
+        avg_grad_norm = grad_norm_sum / max(nonzero, 1)
+
+        self.log("grad/audioencoder_nonzero_frac", nonzero / max(total,1),
+                on_step=True, prog_bar=True)
+        self.log("grad/audioencoder_maxabs", max_abs,
+                on_step=True, prog_bar=True)
+        self.log("grad/audioencoder_avg_norm", avg_grad_norm,
+                on_step=True, prog_bar=True)
