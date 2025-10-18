@@ -84,7 +84,7 @@ def main(config: DictConfig):
         conditional=config.model.conditional,
         is_discrete=config.is_discrete,
         grid_ms=config.grid_ms,
-        window_seconds=config.window_seconds
+        window_seconds=config.window_seconds,
         shuffle=False
     )
 
