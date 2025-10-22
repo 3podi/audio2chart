@@ -6,7 +6,7 @@ from torchmetrics.classification import MulticlassF1Score
 from modules.scheduler import LinearWarmupCosineAnnealingLR
 from modules.models import TransformerDecoderOnly
 from hydra.utils import instantiate
-
+import inspect
 
 
 ###############################
@@ -619,6 +619,7 @@ class WaveformTransformerDiscrete(L.LightningModule):
             eos_token_id=self.eos_token_id, # useless, TODO:delete
             codebook_size = self.audio_encoder.model.config.codebook_size
         )
+        #self.transformer = torch.compile(self.transformer)
 
         self.freeze_encoder=cfg_model.freeze_encoder
         if self.freeze_encoder:
@@ -660,10 +661,11 @@ class WaveformTransformerDiscrete(L.LightningModule):
             audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=False)
             #audio_encoded = self.audio_encoder(audio)
         
-        batch_size = audio.size(0)
-        audio_codes = audio_codes.squeeze().reshape(batch_size, -1)
+        #batch_size = audio.size(0)
+        #audio_codes = audio_codes.squeeze().reshape(batch_size, -1)
         #print('codes shape: ', audio_codes.shape)
-        logits, attn_list = self.transformer(input_tokens, audio_codes, class_ids=class_ids)
+        audio_codes = audio_codes.squeeze()
+        logits = self.transformer(input_tokens, audio_codes, class_ids=class_ids)
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
 
@@ -676,20 +678,20 @@ class WaveformTransformerDiscrete(L.LightningModule):
             acc = self.train_accuracy(preds, targets_flat)
         else:
             #print('Attention list: ', attn_list)
-            metrics = analyze_attention_weights(attn_list, k=5)
+            #metrics = analyze_attention_weights(attn_list, k=5)
             acc = self.val_accuracy(preds, targets_flat)
-            for layer_idx in metrics['layer_indices']:
-                prefix = f'attention/layer_{layer_idx}'
-                self.log(f'{prefix}/mean_entropy', metrics['mean_entropy'][layer_idx]['mean'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/mean_entropy_std', metrics['mean_entropy'][layer_idx]['std'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/mean_entropy_min', metrics['mean_entropy'][layer_idx]['min'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/mean_entropy_max', metrics['mean_entropy'][layer_idx]['max'], on_epoch=True, logger=True)
+            #for layer_idx in metrics['layer_indices']:
+            #    prefix = f'attention/layer_{layer_idx}'
+            #    self.log(f'{prefix}/mean_entropy', metrics['mean_entropy'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/mean_entropy_std', metrics['mean_entropy'][layer_idx]['std'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/mean_entropy_min', metrics['mean_entropy'][layer_idx]['min'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/mean_entropy_max', metrics['mean_entropy'][layer_idx]['max'], on_epoch=True, logger=True)
             
-                self.log(f'{prefix}/mean_attention_weight', metrics['mean_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/max_attention_weight', metrics['max_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/top_k_fraction', metrics['top_k_fraction'][layer_idx]['mean'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/variance_attention', metrics['variance_attention'][layer_idx]['mean'], on_epoch=True, logger=True)
-                self.log(f'{prefix}/mean_attention_per_code', metrics['mean_attention_per_code'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/mean_attention_weight', metrics['mean_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/max_attention_weight', metrics['max_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/top_k_fraction', metrics['top_k_fraction'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/variance_attention', metrics['variance_attention'][layer_idx]['mean'], on_epoch=True, logger=True)
+            #    self.log(f'{prefix}/mean_attention_per_code', metrics['mean_attention_per_code'][layer_idx]['mean'], on_epoch=True, logger=True)
 
         perplexity = torch.exp(loss)
 
@@ -759,6 +761,38 @@ class WaveformTransformerDiscrete(L.LightningModule):
                             self.log(f"{split}/perplexity_{class_name}", class_perplexity, on_step=True, on_epoch=True)
 
 
+        if  batch_idx % 100 == 0:
+            with torch.no_grad():
+                original_loss = F.cross_entropy(logits_flat, targets_flat, weight=weights)
+                
+                #zero_audio = torch.zeros_like(audio_encoded)
+                #zero_logits = self.transformer(input_tokens, zero_audio, attention_mask=mask, class_ids=class_ids)
+                #zero_logits_flat = zero_logits.reshape(-1, self.vocab_size)
+                #zero_loss = F.cross_entropy(zero_logits_flat, targets_flat, ignore_index=self.vocab_size-1)
+                #zero_delta = (zero_loss - original_loss).abs() / (original_loss + 1e-8)
+                #self.log("val/cond_zero_delta_loss", zero_delta, on_step=True)
+                
+                #if audio_encoded.numel() > 0:
+                #    noise_scale = audio_enc.std().clamp(min=1e-6)
+                #    noise = torch.randn_like(audio_encoded) * noise_scale
+                #    noisy_audio = audio_encoded + noise
+                #    noisy_logits = self.transformer(input_tokens, noisy_audio, attention_mask=mask, class_ids=class_ids)
+                #    noisy_logits_flat = noisy_logits.reshape(-1, self.vocab_size)
+                #    noisy_loss = F.cross_entropy(noisy_logits_flat, targets_flat, weight=weights)
+                #    noisy_delta = (noisy_loss - original_loss).abs() / (original_loss + 1e-8)
+                #    self.log("ablation/cond_noisy_delta_loss", noisy_delta, on_step=True)
+                
+                if audio_codes.size(0) > 1:
+                    perm = torch.randperm(audio_codes.size(0))
+                    shuffled_audio = audio_codes[perm]
+                    shuffled_logits = self.transformer(input_tokens, shuffled_audio, class_ids=class_ids)
+                    shuffled_logits_flat = shuffled_logits.reshape(-1, self.vocab_size)
+                    shuffled_loss = F.cross_entropy(shuffled_logits_flat, targets_flat, weight=weights)
+                    shuffled_delta = (shuffled_loss - original_loss).abs() / (original_loss + 1e-8)
+                    self.log(f"ablation/{split}_cond_shuffled_delta_loss", shuffled_delta, on_step=True)
+
+
+
         return loss
     
 
@@ -772,6 +806,58 @@ class WaveformTransformerDiscrete(L.LightningModule):
         return self._step(batch, batch_idx, split='test')
 
     def configure_optimizers(self):
+        weight_decay = self.cfg_optimizer.weight_decay
+        lr_t = self.cfg_optimizer.lr          # LR for transformer
+        lr_e = self.cfg_optimizer.lr_audio    # LR for encoder
+        betas = (0.9, 0.95)
+        device_type = "cuda"  # or detect
+
+        # ---- Build base param dict ----
+        param_dict = {n: p for n,p in self.named_parameters() if p.requires_grad}
+
+        # Separate params by 2D vs <2D
+        decay_params = [p for n,p in param_dict.items() if p.dim() >= 2 and ("audio_encoder" not in n)]
+        nodecay_params = [p for n,p in param_dict.items() if p.dim() < 2 and ("audio_encoder" not in n)]
+
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay, 'lr': lr_t},
+            {'params': nodecay_params, 'weight_decay': 0.0, 'lr': lr_t},
+        ]
+
+        # ---- Add encoder with its own LR ----
+        if not self.freeze_encoder:
+            enc_params = list(self.audio_encoder.parameters())
+            optim_groups.append({
+                'params': enc_params,
+                'weight_decay': weight_decay,
+                'lr': lr_e,
+            })
+
+        # ---- Create optimizer ----
+        #fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        #use_fused = fused_available and device_type == 'cuda'
+        #extra_args = dict(fused=True) if use_fused else dict()
+
+        optimizer = torch.optim.AdamW(optim_groups, betas=betas)#, **extra_args)
+
+        # ---- Scheduler ----
+        scheduler = LinearWarmupCosineAnnealingLR(
+            optimizer=optimizer,
+            warmup_steps=self.cfg_optimizer.warmup_steps,
+            max_steps=self.cfg_optimizer.max_steps,
+            eta_min=1e-4,
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }
+
+
+    def configure_optimizers_old(self):
         # Create single optimizer with parameter groups
         param_groups = [
             {
@@ -811,8 +897,11 @@ class WaveformTransformerDiscrete(L.LightningModule):
         self.train_accuracy.reset()
 
     def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
         self.val_accuracy.reset()
-
+        for i, block in enumerate(self.transformer.layers):
+            if hasattr(block, "cross_gamma"):
+                self.log(f"gamma/layer_{i}", block.cross_gamma.item(), on_epoch=True)
 
 
     def on_after_backward(self):

@@ -13,11 +13,11 @@ transformer:
   _target_: modules.transformer2.TransformerDecoderAudioConditioned
 
   # --- Model dimensions ---
-  d_model: 512                
+  d_model: 1024                
   d_ff: 2048                  
   n_heads: 8                  
-  num_kv_heads: 4
-  n_layers: 8      
+  num_kv_heads: 8
+  n_layers: 16      
   dropout: 0.0               
 
   use_flash: true            

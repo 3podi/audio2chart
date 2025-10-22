@@ -17,7 +17,7 @@ optimizer:
   lr: 1e-3
   weight_decay: 0.01
   warmup_steps: 750
-  max_steps: 15000
+  max_steps: 30000
 
 
 #Trainer

@@ -292,51 +292,22 @@ class CrossAttention(nn.Module):
                 attn_mask = attn_mask.expand(-1, 1, T_q, -1)  # (B, 1, T_q, T_kv)
                 attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)  # Element-wise AND
 
-        if self.training:
-            # During training, use scaled_dot_product_attention without computing weights
-            out = F.scaled_dot_product_attention(
-                query=Q,
-                key=K,
-                value=V,
-                attn_mask=attn_mask,
-                dropout_p=self.dropout.p,
-                is_causal=False,
-                enable_gqa=True
-            )
-        else:
-            # During evaluation, compute attention weights if requested
-            #print('Manual attention!!!')       
-            # Evaluation: Manual attention with GQA support
-            #K_manual = None
-            if self.num_kv_heads != self.n_heads:
-                # Repeat K and V to match n_heads
-                repeat_factor = self.n_heads // self.num_kv_heads  # e.g., 8 / 2 = 4
-                K_manual = K.repeat_interleave(repeat_factor, dim=1)  # (B, H, T_kv, Dk)
-                #V_manual = V.repeat_interleave(repeat_factor, dim=1)  # (B, H, T_kv, Dk)
-
-            attention_scores = torch.matmul(Q, K_manual.transpose(-2, -1)) / math.sqrt(self.d_k)  # (B, n_heads, T_q, T_kv)
-            if attn_mask is not None:
-                attention_scores = attention_scores.masked_fill(~attn_mask, float('-inf'))
-            attention_weights = F.softmax(attention_scores, dim=-1)  # (B, n_heads, T_q, T_kv)
-            
-
-            out = F.scaled_dot_product_attention(
-                query=Q,
-                key=K,
-                value=V,
-                attn_mask=attn_mask,
-                dropout_p=0.0,  # No dropout during evaluation
-                is_causal=False,
-                enable_gqa=True
-            )
+        # During training, use scaled_dot_product_attention without computing weights
+        out = F.scaled_dot_product_attention(
+            query=Q,
+            key=K,
+            value=V,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout.p,
+            is_causal=False,
+            enable_gqa=True
+        )
 
         # Merge heads and project
         out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)  # (B, T_q, d_model)
         out = self.linear_out(out)
 
-        if not self.training and return_attention_weights:
-            return out, attention_weights
-        return out, None
+        return out
 
 
 class FeedForward(nn.Module):
@@ -369,7 +340,7 @@ class DecoderBlockCrossAttention(nn.Module):
         if use_cross:
             self.cross_attn = CrossAttention(        
                 d_model=d_model,
-                n_heads=n_heads,
+                n_heads=n_heads*2,
                 num_kv_heads=num_kv_heads,
                 dropout=dropout,
                 use_rope=True,
@@ -381,7 +352,9 @@ class DecoderBlockCrossAttention(nn.Module):
         self.norm1 = RMSNorm(d_model)
         self.norm3 = RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-    
+        self.cross_gamma = nn.Parameter(torch.tensor(2.0))
+
+
     def forward(self, decoder_input, encoder_output, decoder_mask=None, encoder_mask=None):
         # Self-attention on decoder sequence
         x = decoder_input
@@ -390,18 +363,18 @@ class DecoderBlockCrossAttention(nn.Module):
 
         # Cross-attention
         if self.use_cross:
-            out_cross, attn_weights = self.cross_attn(query=self.norm2(x), key_value=encoder_output, query_mask=decoder_mask, kv_mask=encoder_mask)
+            out_cross = self.cross_attn(query=self.norm2(x), key_value=encoder_output, query_mask=decoder_mask, kv_mask=encoder_mask)
             #x = x + self.cross_attn(
             #    query=self.norm2(x),        # decoder sequence
             #    key_value=encoder_output,   # encoder sequence  
             #    query_mask=decoder_mask,
             #    kv_mask=encoder_mask
             #)
-            x = x + out_cross
+            x = x + self.cross_gamma * out_cross
 
         # Feed forward
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
-        return x, attn_weights
+        return x
     
 
 
@@ -417,6 +390,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             n_layers=6, 
             d_ff=2048, 
             dropout=0.1,
+            audio_drop=0.0,
             rope_base=10000.0, 
             conditional=False, 
             use_flash=False,
@@ -431,7 +405,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
         
         # Token embedding and positional encoding
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.codes_embedding = nn.Embedding(codebook_size, d_model)
+        self.codes_embedding = nn.ModuleList(nn.Embedding(codebook_size, d_model) for _ in range(4))
         self.conditional = conditional
         if self.conditional:
             self.cond_embedding = nn.Embedding(4, d_model)
@@ -455,6 +429,8 @@ class TransformerDecoderAudioConditioned(nn.Module):
     
         # Audio projection layer to adapt codebook_dim to d_model
         #self.audio_projection = nn.Linear(128, d_model, bias=False)
+        self.norm_audio = nn.LayerNorm(d_model)
+        self.audio_drop = nn.Dropout(audio_drop)
 
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
@@ -498,18 +474,17 @@ class TransformerDecoderAudioConditioned(nn.Module):
             x = x + self.cond_embedding(class_ids)
         
         #input_audio = self.audio_projection(input_audio)
-        input_audio = self.codes_embedding(input_audio)
+        input_audio = sum( self.codes_embedding[i](input_audio[:,i,:]) for i in range(4)) 
+        input_audio = self.norm_audio(input_audio)
+        input_audio = self.audio_drop(input_audio)
         # Pass through decoder layers
         for layer in self.layers:
-            x, attn = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
-            if len(attn_list) > 0 and attn is not None:
-                attn_list[0] = attn_list[0] + attn
-            else:
-                attn_list.append(attn)
+            x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
+        
         # Output projection to vocabulary
         logits = self.output_projection(x)
         
-        return logits, attn_list
+        return logits
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         param_dict = {pn: p for pn, p in self.named_parameters()}
