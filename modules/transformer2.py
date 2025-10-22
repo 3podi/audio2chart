@@ -377,6 +377,37 @@ class DecoderBlockCrossAttention(nn.Module):
         return x
     
 
+class TemporalConvPool(nn.Module):
+    def __init__(self, dim: int, compression: int = 2, kernel_size: int = 5):
+        """
+        Temporal Conv1D pooling layer.
+
+        Args:
+            dim (int): embedding dimension (in_channels = out_channels)
+            compression (int): stride factor (must be >= 1)
+                               e.g. 2 means sequence length is halved
+            kernel_size (int): temporal kernel size (should be odd)
+        """
+        super().__init__()
+        assert compression >= 1, "compression must be >= 1"
+        padding = kernel_size // 2
+        self.conv = nn.Conv1d(
+            in_channels=dim,
+            out_channels=dim,
+            kernel_size=kernel_size,
+            stride=compression,
+            padding=padding
+        )
+        self.stride = compression
+
+    def forward(self, x):
+        # x: [B, T, D]
+        x = x.transpose(1, 2)   # [B, D, T]
+        x = self.conv(x)        # downsample in time
+        x = x.transpose(1, 2)   # [B, T_down, D]
+        return x
+
+
 
 class TransformerDecoderAudioConditioned(nn.Module):
     def __init__(
@@ -391,6 +422,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             d_ff=2048, 
             dropout=0.1,
             audio_drop=0.0,
+            compression=None,
             rope_base=10000.0, 
             conditional=False, 
             use_flash=False,
@@ -431,6 +463,10 @@ class TransformerDecoderAudioConditioned(nn.Module):
         #self.audio_projection = nn.Linear(128, d_model, bias=False)
         self.norm_audio = nn.LayerNorm(d_model)
         self.audio_drop = nn.Dropout(audio_drop)
+        
+        self.compression = compression
+        if compression:
+            self.audio_compression = TemporalConvPool(dim=d_model,compression=compression)
 
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
@@ -477,6 +513,8 @@ class TransformerDecoderAudioConditioned(nn.Module):
         input_audio = sum( self.codes_embedding[i](input_audio[:,i,:]) for i in range(4)) 
         input_audio = self.norm_audio(input_audio)
         input_audio = self.audio_drop(input_audio)
+        if self.compression:
+            input_audio = self.audio_compression(input_audio)
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
