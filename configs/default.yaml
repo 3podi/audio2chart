@@ -14,10 +14,10 @@ max_length: 2048
 
 #Optimizer Config
 optimizer:
-  lr: 5e-5
+  lr: 1e-3
   weight_decay: 0.01
-  warmup_steps: 384
-  max_steps: 68000
+  warmup_steps: 750
+  max_steps: 15000
 
 
 #Trainer

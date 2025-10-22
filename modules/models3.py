@@ -81,15 +81,15 @@ if __name__ == "__main__":
     processor = AutoProcessor.from_pretrained("facebook/encodec_24khz")
     
     # Sample audio (1s at 24 kHz)
-    audio = torch.randn(1, 1, 24000)  # [batch_size, channels, sequence_length]
+    audio = torch.randn(24, 1, 30*24000)  # [batch_size, channels, sequence_length]
     padding_mask = torch.ones_like(audio).bool()
 
     # Initialize model
     model = Encodec()
 
     # Encode with embeddings
-    audio_codes, audio_scales, last_frame_pad_length, embeddings = model(audio, padding_mask, bandwidth=3.0, return_embeddings=True)
+    audio_codes, audio_scales, last_frame_pad_length = model(audio, padding_mask, bandwidth=3.0, return_embeddings=False)
     print(f"Audio codes shape: {audio_codes.shape}")  # Expected: [1, 1, 4, 75]
-    print(f"Embeddings shape: {embeddings.shape}")  # Expected: [1, 75, 128]
+    #print(f"Embeddings shape: {embeddings.shape}")  # Expected: [1, 75, 128]
 
-    print(embeddings)
+    #print(embeddings)

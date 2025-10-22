@@ -126,7 +126,8 @@ def main(config: DictConfig):
         tokenizer=tokenizer,
         difficulties=list(config.diff_list),
         instruments=list(config.inst_list),
-        batch_size=config.batch_size,
+        batch_size=16,
+        num_pieces=1,
         max_length=config.max_length,
         conditional=config.model.transformer.conditional,
         use_predecoded_raw=True,
@@ -161,7 +162,7 @@ def main(config: DictConfig):
     #)
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    early_stop_callback = EarlyStopping(monitor="val/acc_epoch", min_delta=0.0001, patience=5, verbose=False, mode="max")
+    early_stop_callback = EarlyStopping(monitor="val/acc_nonpad_epoch", min_delta=0.0001, patience=5, verbose=False, mode="max")
     track_grad_norm = LogGradientNorm()
 
     # Trainer
@@ -177,6 +178,7 @@ def main(config: DictConfig):
         #default_root_dir=checkpoint_path,
         #check_val_every_n_epoch=cfg["val_frequency"],
         num_sanity_val_steps=0,
+        #limit_train_batches=10,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
         gradient_clip_val=1.0,
     )

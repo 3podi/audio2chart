@@ -598,12 +598,12 @@ class WaveformTransformerDiscrete(L.LightningModule):
         #cfg_model.transformer['vocab_size'] = self.vocab_size
 
         # Instantiate submodels from config
-        self.transformer = instantiate(
-            cfg_model.transformer,
-            vocab_size=self.vocab_size,
-            pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
-            eos_token_id=self.eos_token_id, # useless, TODO:delete
-        )
+        #self.transformer = instantiate(
+        #    cfg_model.transformer,
+        #    vocab_size=self.vocab_size,
+        #    pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
+        #    eos_token_id=self.eos_token_id, # useless, TODO:delete
+        #)
         
         self.audio_encoder = instantiate(
             cfg_model.encoder,
@@ -611,8 +611,18 @@ class WaveformTransformerDiscrete(L.LightningModule):
             pad_token_id=pad_token_id, # is passed to the transformer for the seanet
         )
 
+        # Instantiate submodels from config
+        self.transformer = instantiate(
+            cfg_model.transformer,
+            vocab_size=self.vocab_size,
+            pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
+            eos_token_id=self.eos_token_id, # useless, TODO:delete
+            codebook_size = self.audio_encoder.model.config.codebook_size
+        )
+
         self.freeze_encoder=cfg_model.freeze_encoder
         if self.freeze_encoder:
+            self.audio_encoder.eval()
             for param in self.audio_encoder.parameters():
                 param.requires_grad = False
         
@@ -645,11 +655,15 @@ class WaveformTransformerDiscrete(L.LightningModule):
         # Forward pass
         if self.freeze_encoder:
             with torch.no_grad():
-                audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=True)
+                audio_codes, audio_scales, last_frame_pad_length = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=False)
         else:
-            audio_encoded = self.audio_encoder(audio)
-                
-        logits = self.transformer(input_tokens, audio_encoded, class_ids=class_ids)
+            audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=False)
+            #audio_encoded = self.audio_encoder(audio)
+        
+        batch_size = audio.size(0)
+        audio_codes = audio_codes.squeeze().reshape(batch_size, -1)
+        #print('codes shape: ', audio_codes.shape)
+        logits, attn_list = self.transformer(input_tokens, audio_codes, class_ids=class_ids)
         logits_flat = logits.reshape(-1, self.vocab_size)
         targets_flat = target_tokens.reshape(-1)
 
@@ -661,7 +675,22 @@ class WaveformTransformerDiscrete(L.LightningModule):
         if split == 'train':
             acc = self.train_accuracy(preds, targets_flat)
         else:
+            #print('Attention list: ', attn_list)
+            metrics = analyze_attention_weights(attn_list, k=5)
             acc = self.val_accuracy(preds, targets_flat)
+            for layer_idx in metrics['layer_indices']:
+                prefix = f'attention/layer_{layer_idx}'
+                self.log(f'{prefix}/mean_entropy', metrics['mean_entropy'][layer_idx]['mean'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/mean_entropy_std', metrics['mean_entropy'][layer_idx]['std'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/mean_entropy_min', metrics['mean_entropy'][layer_idx]['min'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/mean_entropy_max', metrics['mean_entropy'][layer_idx]['max'], on_epoch=True, logger=True)
+            
+                self.log(f'{prefix}/mean_attention_weight', metrics['mean_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/max_attention_weight', metrics['max_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/top_k_fraction', metrics['top_k_fraction'][layer_idx]['mean'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/variance_attention', metrics['variance_attention'][layer_idx]['mean'], on_epoch=True, logger=True)
+                self.log(f'{prefix}/mean_attention_per_code', metrics['mean_attention_per_code'][layer_idx]['mean'], on_epoch=True, logger=True)
+
         perplexity = torch.exp(loss)
 
         # Log metrics
@@ -763,7 +792,8 @@ class WaveformTransformerDiscrete(L.LightningModule):
         scheduler = LinearWarmupCosineAnnealingLR(
             optimizer=optimizer,
             warmup_steps=self.cfg_optimizer.warmup_steps,
-            max_steps=self.cfg_optimizer.max_steps
+            max_steps=self.cfg_optimizer.max_steps,
+            eta_min= 0.0001
         )
 
         return {
@@ -816,3 +846,91 @@ class WaveformTransformerDiscrete(L.LightningModule):
                 on_step=True, prog_bar=True)
         self.log("grad/audioencoder_avg_norm", avg_grad_norm,
                 on_step=True, prog_bar=True)
+
+
+
+
+
+
+import torch
+
+def analyze_attention_weights(attention_weights_list, k=5):
+    """
+    Analyzes attention weights from cross-attention layers to study how the model attends to audio codes.
+
+    Args:
+        attention_weights_list: List of tensors, each with shape (batch_size, n_heads, T_q, T_kv),
+                              where T_q is the query sequence length (text tokens) and T_kv is the
+                              key-value sequence length (audio codes). One tensor per layer with cross-attention.
+        k: Number of top attention weights to consider for sparsity metric (default: 5).
+
+    Returns:
+        Dict containing the following metrics for each layer:
+        - mean_entropy: (batch_size, n_heads, T_q) - Entropy of attention weights per query token.
+        - mean_attention_weight: (batch_size, n_heads, T_q) - Mean attention weight per query token.
+        - max_attention_weight: (batch_size, n_heads, T_q) - Maximum attention weight per query token.
+        - top_k_fraction: (batch_size, n_heads, T_q) - Fraction of attention mass in top-k audio codes.
+        - variance_attention: (batch_size, n_heads, T_q) - Variance of attention weights per query token.
+        - mean_attention_per_code: (batch_size, n_heads, T_kv) - Mean attention per audio code across query tokens.
+        - layer_indices: List of layer indices corresponding to attention_weights_list.
+    """
+    metrics = {
+        'mean_entropy': [],
+        'mean_attention_weight': [],
+        'max_attention_weight': [],
+        'top_k_fraction': [],
+        'variance_attention': [],
+        'mean_attention_per_code': [],
+        'layer_indices': []
+    }
+
+    # Iterate over attention weights from each layer
+    for layer_idx, attn_weights in enumerate(attention_weights_list):
+        if attn_weights is None:  # Skip layers without cross-attention
+            continue
+
+        # Ensure attention weights are valid (non-negative, sum to 1 over T_kv)
+        attn_weights = torch.clamp(attn_weights, min=1e-9)  # Avoid log(0) and negative values
+        attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True).clamp(min=1e-9)  # Re-normalize
+
+        # Compute entropy: -sum(p * log(p)) over T_kv dimension
+        entropy = -torch.sum(attn_weights * torch.log(attn_weights), dim=-1)  # (batch_size, n_heads, T_q)
+        metrics['mean_entropy'].append(entropy)
+
+        # Mean attention weight per query token
+        mean_attn = attn_weights.mean(dim=-1)  # (batch_size, n_heads, T_q)
+        metrics['mean_attention_weight'].append(mean_attn)
+
+        # Maximum attention weight per query token
+        max_attn = attn_weights.max(dim=-1)[0]  # (batch_size, n_heads, T_q)
+        metrics['max_attention_weight'].append(max_attn)
+
+        # Top-k fraction: Fraction of attention mass in top-k audio codes
+        top_k_values, _ = torch.topk(attn_weights, k=k, dim=-1, largest=True, sorted=True)
+        top_k_fraction = top_k_values.sum(dim=-1) / attn_weights.sum(dim=-1).clamp(min=1e-9)  # (batch_size, n_heads, T_q)
+        metrics['top_k_fraction'].append(top_k_fraction)
+
+        # Variance of attention weights per query token
+        variance_attn = torch.var(attn_weights, dim=-1, unbiased=False)  # (batch_size, n_heads, T_q)
+        metrics['variance_attention'].append(variance_attn)
+
+        # Mean attention per audio code across all query tokens
+        mean_attn_per_code = attn_weights.mean(dim=2)  # (batch_size, n_heads, T_kv)
+        metrics['mean_attention_per_code'].append(mean_attn_per_code)
+
+        metrics['layer_indices'].append(layer_idx)
+
+    # Convert lists to lists of dictionaries for easier access
+    for key in ['mean_entropy', 'mean_attention_weight', 'max_attention_weight',
+                'top_k_fraction', 'variance_attention', 'mean_attention_per_code']:
+        metrics[key] = [
+            {
+                'tensor': tensor,
+                'mean': tensor.mean().item(),
+                'std': tensor.std().item(),
+                'min': tensor.min().item(),
+                'max': tensor.max().item()
+            } for tensor in metrics[key]
+        ]
+
+    return metrics

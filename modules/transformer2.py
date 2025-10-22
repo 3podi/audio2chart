@@ -131,7 +131,7 @@ class MultiHeadAttention(nn.Module):
         return self.linear_out(out)
     
 
-class CrossAttention(nn.Module):
+class CrossAttention_old(nn.Module):
     """
     Cross-Attention with RoPE and GQA support using scaled_dot_product_attention.
     """
@@ -205,22 +205,139 @@ class CrossAttention(nn.Module):
                 # Broadcast attn_mask to (B, 1, T_q, T_kv) and apply query_mask
                 attn_mask = attn_mask.expand(-1, 1, T_q, -1)  # (B, 1, T_q, T_kv)
                 attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)  # Element-wise AND
-
-        # Apply scaled dot-product attention with FlashAttention if enabled
-        out = F.scaled_dot_product_attention(
-            query=Q,
-            key=K,
-            value=V,
-            attn_mask=attn_mask,  # (B, 1, T_q, T_kv) broadcast to (B, H, T_q, T_kv)
-            dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=False,  # Cross-attention is not causal by default
-            enable_gqa=True   # Enable GQA
-        )
-
+        
+        if self.training:
+            # Apply scaled dot-product attention with FlashAttention if enabled
+            out = F.scaled_dot_product_attention(
+                query=Q,
+                key=K,
+                value=V,
+                attn_mask=attn_mask,  # (B, 1, T_q, T_kv) broadcast to (B, H, T_q, T_kv)
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False,  # Cross-attention is not causal by default
+                enable_gqa=True   # Enable GQA
+            )
+        
         # Merge heads and project
         out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)  # (B, T_q, d_model)
         return self.linear_out(out)
     
+
+class CrossAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        num_kv_heads: int = None,
+        dropout: float = 0.1,
+        use_rope: bool = True,
+        rope_base: float = 10000.0,
+        use_flash: bool = False
+    ):
+        super().__init__()
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else n_heads
+        assert self.n_heads % self.num_kv_heads == 0, "n_heads must be divisible by num_kv_heads"
+        self.d_k = d_model // n_heads
+        self.dropout = nn.Dropout(dropout)
+        self.use_rope = use_rope
+        self.rope_base = rope_base
+        self.use_flash = use_flash
+
+        self.w_q = nn.Linear(d_model, d_model, bias=False)
+        self.w_k = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
+        self.w_v = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
+        self.linear_out = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, query, key_value, query_mask=None, kv_mask=None, return_attention_weights=True):
+        """
+        Cross attention between query and key-value sequences.
+        
+        Args:
+            query: (B, T_q, d_model) - decoder/target sequence
+            key_value: (B, T_kv, d_model) - encoder/source sequence
+            query_mask: (B, T_q) with 1=keep, 0=pad for query sequence
+            kv_mask: (B, T_kv) with 1=keep, 0=pad for key-value sequence
+            return_attention_weights: If True, return attention weights (only during evaluation)
+        
+        Returns:
+            output: (B, T_q, d_model)
+            attention_weights: (B, n_heads, T_q, T_kv) (if return_attention_weights=True and not training)
+        """
+        B, T_q, _ = query.size()
+        T_kv = key_value.size(1)
+
+        # Project and reshape
+        Q = self.w_q(query).view(B, T_q, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, T_q, Dk)
+        K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
+        V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
+
+        # Apply RoPE if enabled
+        if self.use_rope:
+            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+
+        # Create combined attention mask
+        attn_mask = None
+        if kv_mask is not None or query_mask is not None:
+            if kv_mask is not None:
+                attn_mask = kv_mask[:, None, None, :].bool()  # (B, 1, 1, T_kv)
+            else:
+                attn_mask = torch.ones(B, 1, 1, T_kv, device=query.device, dtype=torch.bool)
+            if query_mask is not None:
+                query_expanded = query_mask[:, None, :, None].bool()  # (B, 1, T_q, 1)
+                attn_mask = attn_mask.expand(-1, 1, T_q, -1)  # (B, 1, T_q, T_kv)
+                attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)  # Element-wise AND
+
+        if self.training:
+            # During training, use scaled_dot_product_attention without computing weights
+            out = F.scaled_dot_product_attention(
+                query=Q,
+                key=K,
+                value=V,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout.p,
+                is_causal=False,
+                enable_gqa=True
+            )
+        else:
+            # During evaluation, compute attention weights if requested
+            #print('Manual attention!!!')       
+            # Evaluation: Manual attention with GQA support
+            #K_manual = None
+            if self.num_kv_heads != self.n_heads:
+                # Repeat K and V to match n_heads
+                repeat_factor = self.n_heads // self.num_kv_heads  # e.g., 8 / 2 = 4
+                K_manual = K.repeat_interleave(repeat_factor, dim=1)  # (B, H, T_kv, Dk)
+                #V_manual = V.repeat_interleave(repeat_factor, dim=1)  # (B, H, T_kv, Dk)
+
+            attention_scores = torch.matmul(Q, K_manual.transpose(-2, -1)) / math.sqrt(self.d_k)  # (B, n_heads, T_q, T_kv)
+            if attn_mask is not None:
+                attention_scores = attention_scores.masked_fill(~attn_mask, float('-inf'))
+            attention_weights = F.softmax(attention_scores, dim=-1)  # (B, n_heads, T_q, T_kv)
+            
+
+            out = F.scaled_dot_product_attention(
+                query=Q,
+                key=K,
+                value=V,
+                attn_mask=attn_mask,
+                dropout_p=0.0,  # No dropout during evaluation
+                is_causal=False,
+                enable_gqa=True
+            )
+
+        # Merge heads and project
+        out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)  # (B, T_q, d_model)
+        out = self.linear_out(out)
+
+        if not self.training and return_attention_weights:
+            return out, attention_weights
+        return out, None
+
 
 class FeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
@@ -273,16 +390,18 @@ class DecoderBlockCrossAttention(nn.Module):
 
         # Cross-attention
         if self.use_cross:
-            x = x + self.cross_attn(
-                query=self.norm2(x),        # decoder sequence
-                key_value=encoder_output,   # encoder sequence  
-                query_mask=decoder_mask,
-                kv_mask=encoder_mask
-            )
-        
+            out_cross, attn_weights = self.cross_attn(query=self.norm2(x), key_value=encoder_output, query_mask=decoder_mask, kv_mask=encoder_mask)
+            #x = x + self.cross_attn(
+            #    query=self.norm2(x),        # decoder sequence
+            #    key_value=encoder_output,   # encoder sequence  
+            #    query_mask=decoder_mask,
+            #    kv_mask=encoder_mask
+            #)
+            x = x + out_cross
+
         # Feed forward
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
-        return x
+        return x, attn_weights
     
 
 
@@ -300,16 +419,19 @@ class TransformerDecoderAudioConditioned(nn.Module):
             dropout=0.1,
             rope_base=10000.0, 
             conditional=False, 
-            use_flash=False
+            use_flash=False,
+            codebook_size=1024
         ):
         super().__init__()
         
         self.d_model = d_model
+        d_ff = 4 * d_model
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
         
         # Token embedding and positional encoding
         self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.codes_embedding = nn.Embedding(codebook_size, d_model)
         self.conditional = conditional
         if self.conditional:
             self.cond_embedding = nn.Embedding(4, d_model)
@@ -317,7 +439,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
         # Decoder layers
         self.layers = nn.ModuleList([])
         for i in range(n_layers):
-            use_cross = True if i%2==0 else False
+            use_cross = True #if i%2==0 else False
             self.layers.append(
                 DecoderBlockCrossAttention(
                     d_model=d_model,
@@ -332,7 +454,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             )
     
         # Audio projection layer to adapt codebook_dim to d_model
-        self.audio_projection = nn.Linear(128, d_model, bias=False)
+        #self.audio_projection = nn.Linear(128, d_model, bias=False)
 
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
@@ -367,6 +489,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
         """
         
         # Token embeddings
+        attn_list = []
         x = self.token_embedding(input_ids)
 
         if self.conditional:
@@ -374,15 +497,19 @@ class TransformerDecoderAudioConditioned(nn.Module):
             # Embed the class index and add to the input
             x = x + self.cond_embedding(class_ids)
         
-        input_audio = self.audio_projection(input_audio)
+        #input_audio = self.audio_projection(input_audio)
+        input_audio = self.codes_embedding(input_audio)
         # Pass through decoder layers
         for layer in self.layers:
-            x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
-        
+            x, attn = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
+            if len(attn_list) > 0 and attn is not None:
+                attn_list[0] = attn_list[0] + attn
+            else:
+                attn_list.append(attn)
         # Output projection to vocabulary
         logits = self.output_projection(x)
         
-        return logits
+        return logits, attn_list
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         param_dict = {pn: p for pn, p in self.named_parameters()}
