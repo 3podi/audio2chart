@@ -67,7 +67,7 @@ def main(config: DictConfig):
         reinit=True
     )
 
-    wandb_logger = WandbLogger(log_model="all")
+    wandb_logger = WandbLogger(log_model=False)
 
     # Data
     if config.data_split_folder:
