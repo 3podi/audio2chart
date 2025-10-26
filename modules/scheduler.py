@@ -21,9 +21,13 @@ class LinearWarmupCosineAnnealingLR(_LRScheduler):
                     for base_lr in self.base_lrs]
         elif self.last_epoch < self.max_steps:
             # Cosine annealing
-            return [self.eta_min + (base_lr - self.eta_min) * 
-                    (1 + math.cos(math.pi * (self.last_epoch - self.warmup_steps) / (self.max_steps - self.warmup_steps))) / 2
-                    for base_lr in self.base_lrs]
+            return [
+                self.eta_min + (base_lr - self.eta_min) *
+                (1 + math.cos(math.pi * (self.last_epoch - self.warmup_steps) /
+                            (self.max_steps - self.warmup_steps))) / 2
+                if base_lr > self.eta_min else self.eta_min
+                for base_lr in self.base_lrs
+            ]
         else:
             return [self.eta_min 
                     for base_lr in self.base_lrs]

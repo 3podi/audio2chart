@@ -131,98 +131,7 @@ class MultiHeadAttention(nn.Module):
         return self.linear_out(out)
     
 
-class CrossAttention_old(nn.Module):
-    """
-    Cross-Attention with RoPE and GQA support using scaled_dot_product_attention.
-    """
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        num_kv_heads: int = None,
-        dropout: float = 0.1,
-        use_rope: bool = True,
-        rope_base: float = 10000.0,
-        use_flash: bool = False
-    ):
-        super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
-        
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else n_heads
-        assert self.n_heads % self.num_kv_heads == 0, "n_heads must be divisible by num_kv_heads"
-        self.d_k = d_model // n_heads
-        self.dropout = nn.Dropout(dropout)
-        self.use_rope = use_rope
-        self.rope_base = rope_base
-        self.use_flash = use_flash
-
-        # Linear projections
-        self.w_q = nn.Linear(d_model, d_model, bias=False)  # Query projection
-        self.w_k = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)  # Key projection
-        self.w_v = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)  # Value projection
-        self.linear_out = nn.Linear(d_model, d_model, bias=False)
-
-    def forward(self, query, key_value, query_mask=None, kv_mask=None):
-        """
-        Cross attention between query and key-value sequences.
-        
-        Args:
-            query: (B, T_q, d_model) - decoder/target sequence
-            key_value: (B, T_kv, d_model) - encoder/source sequence
-            query_mask: (B, T_q) with 1=keep, 0=pad for query sequence
-            kv_mask: (B, T_kv) with 1=keep, 0=pad for key-value sequence
-        
-        Returns:
-            output: (B, T_q, d_model)
-        """
-        B, T_q, _ = query.size()
-        T_kv = key_value.size(1)
-
-        # Project and reshape
-        Q = self.w_q(query).view(B, T_q, self.n_heads, self.d_k).transpose(1, 2)  # (B, H, T_q, Dk)
-        K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
-        V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
-
-        # Apply RoPE if enabled
-        if self.use_rope:
-            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
-
-        # Create combined attention mask
-        attn_mask = None
-        if kv_mask is not None or query_mask is not None:
-            # Start with kv_mask if provided
-            if kv_mask is not None:
-                attn_mask = kv_mask[:, None, None, :].bool()  # (B, 1, 1, T_kv)
-            else:
-                attn_mask = torch.ones(B, 1, 1, T_kv, device=query.device, dtype=torch.bool)
-
-            # Combine with query_mask if provided
-            if query_mask is not None:
-                query_expanded = query_mask[:, None, :, None].bool()  # (B, 1, T_q, 1)
-                # Broadcast attn_mask to (B, 1, T_q, T_kv) and apply query_mask
-                attn_mask = attn_mask.expand(-1, 1, T_q, -1)  # (B, 1, T_q, T_kv)
-                attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)  # Element-wise AND
-        
-        if self.training:
-            # Apply scaled dot-product attention with FlashAttention if enabled
-            out = F.scaled_dot_product_attention(
-                query=Q,
-                key=K,
-                value=V,
-                attn_mask=attn_mask,  # (B, 1, T_q, T_kv) broadcast to (B, H, T_q, T_kv)
-                dropout_p=self.dropout.p if self.training else 0.0,
-                is_causal=False,  # Cross-attention is not causal by default
-                enable_gqa=True   # Enable GQA
-            )
-        
-        # Merge heads and project
-        out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)  # (B, T_q, d_model)
-        return self.linear_out(out)
     
-
 class CrossAttention(nn.Module):
     def __init__(
         self,
@@ -352,25 +261,20 @@ class DecoderBlockCrossAttention(nn.Module):
         self.norm1 = RMSNorm(d_model)
         self.norm3 = RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-        self.cross_gamma = nn.Parameter(torch.tensor(2.0))
-
 
     def forward(self, decoder_input, encoder_output, decoder_mask=None, encoder_mask=None):
         # Self-attention on decoder sequence
         x = decoder_input
         x = x + self.self_attn(self.norm1(x), decoder_mask)
         
-
         # Cross-attention
         if self.use_cross:
-            out_cross = self.cross_attn(query=self.norm2(x), key_value=encoder_output, query_mask=decoder_mask, kv_mask=encoder_mask)
-            #x = x + self.cross_attn(
-            #    query=self.norm2(x),        # decoder sequence
-            #    key_value=encoder_output,   # encoder sequence  
-            #    query_mask=decoder_mask,
-            #    kv_mask=encoder_mask
-            #)
-            x = x + self.cross_gamma * out_cross
+            x = x + self.cross_attn(
+                query=self.norm2(x),        # decoder sequence
+                key_value=encoder_output,   # encoder sequence  
+                query_mask=decoder_mask,
+                kv_mask=encoder_mask
+            )
 
         # Feed forward
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
@@ -445,7 +349,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
         # Decoder layers
         self.layers = nn.ModuleList([])
         for i in range(n_layers):
-            use_cross = True #if i%2==0 else False
+            use_cross = True
             self.layers.append(
                 DecoderBlockCrossAttention(
                     d_model=d_model,
@@ -501,20 +405,19 @@ class TransformerDecoderAudioConditioned(nn.Module):
         """
         
         # Token embeddings
-        attn_list = []
         x = self.token_embedding(input_ids)
 
         if self.conditional:
             assert class_ids is not None, "class_idx must be provided for conditional transformer"
             # Embed the class index and add to the input
             x = x + self.cond_embedding(class_ids)
-        
-        #input_audio = self.audio_projection(input_audio)
+
+        # Adapt audio codes        
         input_audio = sum( self.codes_embedding[i](input_audio[:,i,:]) for i in range(4)) 
         input_audio = self.norm_audio(input_audio)
-        input_audio = self.audio_drop(input_audio)
         if self.compression:
             input_audio = self.audio_compression(input_audio)
+        
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)
@@ -523,27 +426,3 @@ class TransformerDecoderAudioConditioned(nn.Module):
         logits = self.output_projection(x)
         
         return logits
-
-    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        param_dict = {pn: p for pn, p in self.named_parameters()}
-        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
-        extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        print(f"using fused AdamW: {use_fused}")
-
-        return optimizer

@@ -102,6 +102,35 @@ class NotesTransformer(L.LightningModule):
                 self.log("train/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
                 self.log("train/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
                 self.log("train/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
+            
+            # === PAD-related metrics ===
+            pad_preds = preds == self.pad_token_id
+            pad_targets = targets_flat == self.pad_token_id
+
+            total_tokens = targets_flat.numel()
+            total_nonpad_targets = (~pad_targets).sum()
+            total_pad_targets = pad_targets.sum()
+            total_pad_preds = pad_preds.sum()
+
+            # False positive rate for pad:
+            pad_fp = (pad_preds & (~pad_targets)).sum()
+            pad_fp_rate = pad_fp.float() / (total_nonpad_targets.float() + 1e-8)
+
+            # Pad prediction rate:
+            pad_pred_rate = total_pad_preds.float() / (total_tokens + 1e-8)
+
+            # True positive rate for pad (optional context):
+            pad_tp = (pad_preds & pad_targets).sum()
+            pad_tp_rate = pad_tp.float() / (total_pad_targets.float() + 1e-8)
+
+            # Non-pad recall (1 - FP rate):
+            nonpad_recall = 1.0 - pad_fp_rate
+
+            # Log everything
+            self.log("train/pad_fp_rate", pad_fp_rate, on_step=True, on_epoch=True, prog_bar=True)
+            self.log("train/pad_pred_rate", pad_pred_rate, on_step=True, on_epoch=True)
+            self.log("train/pad_tp_rate", pad_tp_rate, on_step=True, on_epoch=True)
+            self.log("train/nonpad_recall", nonpad_recall, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
@@ -196,6 +225,35 @@ class NotesTransformer(L.LightningModule):
                 self.log("val/loss_nonpad", nonpad_loss, on_step=True, on_epoch=True)
                 self.log("val/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
                 self.log("val/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
+
+            # === PAD-related metrics ===
+            pad_preds = preds == self.pad_token_id
+            pad_targets = targets_flat == self.pad_token_id
+
+            total_tokens = targets_flat.numel()
+            total_nonpad_targets = (~pad_targets).sum()
+            total_pad_targets = pad_targets.sum()
+            total_pad_preds = pad_preds.sum()
+
+            # False positive rate for pad:
+            pad_fp = (pad_preds & (~pad_targets)).sum()
+            pad_fp_rate = pad_fp.float() / (total_nonpad_targets.float() + 1e-8)
+
+            # Pad prediction rate:
+            pad_pred_rate = total_pad_preds.float() / (total_tokens + 1e-8)
+
+            # True positive rate for pad (optional context):
+            pad_tp = (pad_preds & pad_targets).sum()
+            pad_tp_rate = pad_tp.float() / (total_pad_targets.float() + 1e-8)
+
+            # Non-pad recall (1 - FP rate):
+            nonpad_recall = 1.0 - pad_fp_rate
+
+            # Log everything
+            self.log("val/pad_fp_rate", pad_fp_rate, on_step=True, on_epoch=True, prog_bar=True)
+            self.log("val/pad_pred_rate", pad_pred_rate, on_step=True, on_epoch=True)
+            self.log("val/pad_tp_rate", pad_tp_rate, on_step=True, on_epoch=True)
+            self.log("val/nonpad_recall", nonpad_recall, on_step=True, on_epoch=True)
 
         # Compute per-class metrics
         if class_ids is not None and batch_idx % 100 == 0:
@@ -594,16 +652,6 @@ class WaveformTransformerDiscrete(L.LightningModule):
         self.vocab_size = vocab_size
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
-
-        #cfg_model.transformer['vocab_size'] = self.vocab_size
-
-        # Instantiate submodels from config
-        #self.transformer = instantiate(
-        #    cfg_model.transformer,
-        #    vocab_size=self.vocab_size,
-        #    pad_token_id=-1, #self.pad_token_id, use only if there are tokens to not attend to but at the moment i have discrete full seqs
-        #    eos_token_id=self.eos_token_id, # useless, TODO:delete
-        #)
         
         self.audio_encoder = instantiate(
             cfg_model.encoder,
@@ -619,7 +667,6 @@ class WaveformTransformerDiscrete(L.LightningModule):
             eos_token_id=self.eos_token_id, # useless, TODO:delete
             codebook_size = self.audio_encoder.model.config.codebook_size
         )
-        #self.transformer = torch.compile(self.transformer)
 
         self.freeze_encoder=cfg_model.freeze_encoder
         if self.freeze_encoder:
@@ -661,9 +708,6 @@ class WaveformTransformerDiscrete(L.LightningModule):
             audio_codes, audio_scales, last_frame_pad_length, audio_encoded = self.audio_encoder(audio, padding_mask, bandwidth=3.0, return_embeddings=False)
             #audio_encoded = self.audio_encoder(audio)
         
-        #batch_size = audio.size(0)
-        #audio_codes = audio_codes.squeeze().reshape(batch_size, -1)
-        #print('codes shape: ', audio_codes.shape)
         audio_codes = audio_codes.squeeze()
         logits = self.transformer(input_tokens, audio_codes, class_ids=class_ids)
         logits_flat = logits.reshape(-1, self.vocab_size)
@@ -677,21 +721,8 @@ class WaveformTransformerDiscrete(L.LightningModule):
         if split == 'train':
             acc = self.train_accuracy(preds, targets_flat)
         else:
-            #print('Attention list: ', attn_list)
-            #metrics = analyze_attention_weights(attn_list, k=5)
             acc = self.val_accuracy(preds, targets_flat)
-            #for layer_idx in metrics['layer_indices']:
-            #    prefix = f'attention/layer_{layer_idx}'
-            #    self.log(f'{prefix}/mean_entropy', metrics['mean_entropy'][layer_idx]['mean'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/mean_entropy_std', metrics['mean_entropy'][layer_idx]['std'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/mean_entropy_min', metrics['mean_entropy'][layer_idx]['min'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/mean_entropy_max', metrics['mean_entropy'][layer_idx]['max'], on_epoch=True, logger=True)
-            
-            #    self.log(f'{prefix}/mean_attention_weight', metrics['mean_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/max_attention_weight', metrics['max_attention_weight'][layer_idx]['mean'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/top_k_fraction', metrics['top_k_fraction'][layer_idx]['mean'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/variance_attention', metrics['variance_attention'][layer_idx]['mean'], on_epoch=True, logger=True)
-            #    self.log(f'{prefix}/mean_attention_per_code', metrics['mean_attention_per_code'][layer_idx]['mean'], on_epoch=True, logger=True)
+
 
         perplexity = torch.exp(loss)
 
@@ -717,6 +748,34 @@ class WaveformTransformerDiscrete(L.LightningModule):
             self.log(f"{split}/acc_nonpad", nonpad_acc, on_step=True, on_epoch=True)
             self.log(f"{split}/perplexity_nonpad", nonpad_perplexity, on_step=True, on_epoch=True)
 
+        # === PAD-related metrics ===
+        pad_preds = preds == self.pad_token_id
+        pad_targets = targets_flat == self.pad_token_id
+
+        total_tokens = targets_flat.numel()
+        total_nonpad_targets = (~pad_targets).sum()
+        total_pad_targets = pad_targets.sum()
+        total_pad_preds = pad_preds.sum()
+
+        # False positive rate for pad:
+        pad_fp = (pad_preds & (~pad_targets)).sum()
+        pad_fp_rate = pad_fp.float() / (total_nonpad_targets.float() + 1e-8)
+
+        # Pad prediction rate:
+        pad_pred_rate = total_pad_preds.float() / (total_tokens + 1e-8)
+
+        # True positive rate for pad (optional context):
+        pad_tp = (pad_preds & pad_targets).sum()
+        pad_tp_rate = pad_tp.float() / (total_pad_targets.float() + 1e-8)
+
+        # Non-pad recall (1 - FP rate):
+        nonpad_recall = 1.0 - pad_fp_rate
+
+        # Log everything
+        self.log(f"{split}/pad_fp_rate", pad_fp_rate, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(f"{split}/pad_pred_rate", pad_pred_rate, on_step=True, on_epoch=True)
+        self.log(f"{split}/pad_tp_rate", pad_tp_rate, on_step=True, on_epoch=True)
+        self.log(f"{split}/nonpad_recall", nonpad_recall, on_step=True, on_epoch=True)
 
 
         # Compute per-class metrics
@@ -810,7 +869,6 @@ class WaveformTransformerDiscrete(L.LightningModule):
         lr_t = self.cfg_optimizer.lr          # LR for transformer
         lr_e = self.cfg_optimizer.lr_audio    # LR for encoder
         betas = (0.9, 0.95)
-        device_type = "cuda"  # or detect
 
         # ---- Build base param dict ----
         param_dict = {n: p for n,p in self.named_parameters() if p.requires_grad}
@@ -834,18 +892,14 @@ class WaveformTransformerDiscrete(L.LightningModule):
             })
 
         # ---- Create optimizer ----
-        #fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        #use_fused = fused_available and device_type == 'cuda'
-        #extra_args = dict(fused=True) if use_fused else dict()
-
-        optimizer = torch.optim.AdamW(optim_groups, betas=betas)#, **extra_args)
+        optimizer = torch.optim.AdamW(optim_groups, betas=betas)
 
         # ---- Scheduler ----
         scheduler = LinearWarmupCosineAnnealingLR(
             optimizer=optimizer,
             warmup_steps=self.cfg_optimizer.warmup_steps,
             max_steps=self.cfg_optimizer.max_steps,
-            eta_min=1e-4,
+            eta_min=lr_t*0.1,
         )
 
         return {
@@ -853,41 +907,6 @@ class WaveformTransformerDiscrete(L.LightningModule):
             "lr_scheduler": {
                 "scheduler": scheduler,
                 "interval": "step",
-            },
-        }
-
-
-    def configure_optimizers_old(self):
-        # Create single optimizer with parameter groups
-        param_groups = [
-            {
-                'params': self.transformer.parameters(),
-                'lr': self.cfg_optimizer['lr'],
-                'weight_decay': self.cfg_optimizer['weight_decay']
-            }
-        ]
-        if not self.freeze_encoder:
-            param_groups.append({
-                'params': self.audio_encoder.parameters(),
-                'lr': self.cfg_optimizer['lr_audio'],
-                'weight_decay': self.cfg_optimizer['weight_decay']
-            })
-        optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.95))
-
-        # Single scheduler for the combined optimizer
-        scheduler = LinearWarmupCosineAnnealingLR(
-            optimizer=optimizer,
-            warmup_steps=self.cfg_optimizer.warmup_steps,
-            max_steps=self.cfg_optimizer.max_steps,
-            eta_min= 0.0001
-        )
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-            "scheduler": scheduler,
-            "interval": "step",
-            "frequency": 1
             },
         }
 
@@ -935,91 +954,3 @@ class WaveformTransformerDiscrete(L.LightningModule):
                 on_step=True, prog_bar=True)
         self.log("grad/audioencoder_avg_norm", avg_grad_norm,
                 on_step=True, prog_bar=True)
-
-
-
-
-
-
-import torch
-
-def analyze_attention_weights(attention_weights_list, k=5):
-    """
-    Analyzes attention weights from cross-attention layers to study how the model attends to audio codes.
-
-    Args:
-        attention_weights_list: List of tensors, each with shape (batch_size, n_heads, T_q, T_kv),
-                              where T_q is the query sequence length (text tokens) and T_kv is the
-                              key-value sequence length (audio codes). One tensor per layer with cross-attention.
-        k: Number of top attention weights to consider for sparsity metric (default: 5).
-
-    Returns:
-        Dict containing the following metrics for each layer:
-        - mean_entropy: (batch_size, n_heads, T_q) - Entropy of attention weights per query token.
-        - mean_attention_weight: (batch_size, n_heads, T_q) - Mean attention weight per query token.
-        - max_attention_weight: (batch_size, n_heads, T_q) - Maximum attention weight per query token.
-        - top_k_fraction: (batch_size, n_heads, T_q) - Fraction of attention mass in top-k audio codes.
-        - variance_attention: (batch_size, n_heads, T_q) - Variance of attention weights per query token.
-        - mean_attention_per_code: (batch_size, n_heads, T_kv) - Mean attention per audio code across query tokens.
-        - layer_indices: List of layer indices corresponding to attention_weights_list.
-    """
-    metrics = {
-        'mean_entropy': [],
-        'mean_attention_weight': [],
-        'max_attention_weight': [],
-        'top_k_fraction': [],
-        'variance_attention': [],
-        'mean_attention_per_code': [],
-        'layer_indices': []
-    }
-
-    # Iterate over attention weights from each layer
-    for layer_idx, attn_weights in enumerate(attention_weights_list):
-        if attn_weights is None:  # Skip layers without cross-attention
-            continue
-
-        # Ensure attention weights are valid (non-negative, sum to 1 over T_kv)
-        attn_weights = torch.clamp(attn_weights, min=1e-9)  # Avoid log(0) and negative values
-        attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True).clamp(min=1e-9)  # Re-normalize
-
-        # Compute entropy: -sum(p * log(p)) over T_kv dimension
-        entropy = -torch.sum(attn_weights * torch.log(attn_weights), dim=-1)  # (batch_size, n_heads, T_q)
-        metrics['mean_entropy'].append(entropy)
-
-        # Mean attention weight per query token
-        mean_attn = attn_weights.mean(dim=-1)  # (batch_size, n_heads, T_q)
-        metrics['mean_attention_weight'].append(mean_attn)
-
-        # Maximum attention weight per query token
-        max_attn = attn_weights.max(dim=-1)[0]  # (batch_size, n_heads, T_q)
-        metrics['max_attention_weight'].append(max_attn)
-
-        # Top-k fraction: Fraction of attention mass in top-k audio codes
-        top_k_values, _ = torch.topk(attn_weights, k=k, dim=-1, largest=True, sorted=True)
-        top_k_fraction = top_k_values.sum(dim=-1) / attn_weights.sum(dim=-1).clamp(min=1e-9)  # (batch_size, n_heads, T_q)
-        metrics['top_k_fraction'].append(top_k_fraction)
-
-        # Variance of attention weights per query token
-        variance_attn = torch.var(attn_weights, dim=-1, unbiased=False)  # (batch_size, n_heads, T_q)
-        metrics['variance_attention'].append(variance_attn)
-
-        # Mean attention per audio code across all query tokens
-        mean_attn_per_code = attn_weights.mean(dim=2)  # (batch_size, n_heads, T_kv)
-        metrics['mean_attention_per_code'].append(mean_attn_per_code)
-
-        metrics['layer_indices'].append(layer_idx)
-
-    # Convert lists to lists of dictionaries for easier access
-    for key in ['mean_entropy', 'mean_attention_weight', 'max_attention_weight',
-                'top_k_fraction', 'variance_attention', 'mean_attention_per_code']:
-        metrics[key] = [
-            {
-                'tensor': tensor,
-                'mean': tensor.mean().item(),
-                'std': tensor.std().item(),
-                'min': tensor.min().item(),
-                'max': tensor.max().item()
-            } for tensor in metrics[key]
-        ]
-
-    return metrics
