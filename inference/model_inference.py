@@ -13,16 +13,17 @@ class MultiHeadAttention(nn.Module):
         dropout: float = 0.1,
         is_causal: bool = False,
         use_rope: bool = True,
-        rope_base: float = 10000.0,
+        rope_base: float = 10000.0
     ):
         super().__init__()
-        assert d_model % n_heads == 0
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        
         self.d_model = d_model
         self.n_heads = n_heads
-        self.num_kv_heads = num_kv_heads or n_heads
-        assert self.n_heads % self.num_kv_heads == 0
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else n_heads
+        assert self.n_heads % self.num_kv_heads == 0, "n_heads must be divisible by num_kv_heads"
         self.d_k = d_model // n_heads
-        self.dropout = dropout
+        self.dropout = nn.Dropout(dropout)
         self.is_causal = is_causal
         self.use_rope = use_rope
         self.rope_base = rope_base
@@ -32,71 +33,56 @@ class MultiHeadAttention(nn.Module):
         self.w_v = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
         self.linear_out = nn.Linear(d_model, d_model, bias=False)
 
-    # reshape (B, T, d) -> (B, H, T, d_k)
-    def _reshape_q(self, x):
-        B, T, _ = x.shape
-        return self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
-
-    def _reshape_kv(self, x):
-        B, T, _ = x.shape
-        return (
-            self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2),
-            self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2),
-        )
-
     def forward(
         self,
         x: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor = None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """
-        Returns:
-            out          – (B, T, d_model)
-            new_cache    – (k_cache, v_cache)  each (B, num_kv_heads, T_cache, d_k)
-        """
-        B, T, _ = x.shape
-        device = x.device
+        B, T, _ = x.size()
 
-        Q = self._reshape_q(x)                               # (B, H, T, d_k)
+        Q = self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
 
         if use_cache and cache is not None:
-            K_cache, V_cache = cache
-            K = self._reshape_kv(x)[0]                       # new key (B, H_kv, T, d_k)
-            V = self._reshape_kv(x)[1]                       # new value
-            K = torch.cat([K_cache, K], dim=2)               # (B, H_kv, T_cache+T, d_k)
-            V = torch.cat([V_cache, V], dim=2)
+            K_past, V_past = cache
+            K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
+            V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
+            K = torch.cat([K_past, K_new], dim=2)
+            V = torch.cat([V_past, V_new], dim=2)
         else:
-            K, V = self._reshape_kv(x)                       # (B, H_kv, T, d_k)
+            K = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
+            V = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
 
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
             K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
 
-        if self.is_causal:
-            causal = torch.tril(torch.ones(T, T, device=device, dtype=torch.bool))
-            causal = causal[None, None, :, :]               # (1,1,T,T)
-        else:
-            causal = None
-
         if attention_mask is not None:
-            pad = attention_mask[:, None, :, None].bool()    # (B,1,T,1)
-            if causal is not None:
-                mask = pad.expand(-1, -1, -1, T) & causal.expand(B, -1, -1, -1)
-            else:
-                mask = pad.expand(-1, -1, -1, T)
+            attn_mask = attention_mask.unsqueeze(1)
+            attn_mask = attn_mask.bool()
+
+            causal_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()
+            causal_mask = causal_mask[None, None, :, :]
+            causal_mask = causal_mask.expand(B, 1, -1, -1)
+
+            attn_mask = attn_mask.unsqueeze(2).expand(-1, -1, T, -1)
+            attn_mask = attn_mask & causal_mask
         else:
-            mask = causal
+            attn_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()[None, None, :, :]
+            attn_mask = attn_mask.expand(B, 1, -1, -1) if self.is_causal else None
 
         out = F.scaled_dot_product_attention(
-            Q, K, V,
-            attn_mask=mask,
-            dropout_p=self.dropout if self.training else 0.0,
+            query=Q,
+            key=K,
+            value=V,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout.p if self.training else 0.0,
             is_causal=False,
-            enable_gqa=True,
+            enable_gqa=True
         )
+
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         out = self.linear_out(out)
 
@@ -114,81 +100,76 @@ class CrossAttention(nn.Module):
         dropout: float = 0.1,
         use_rope: bool = True,
         rope_base: float = 10000.0,
+        use_flash: bool = False
     ):
         super().__init__()
-        assert d_model % n_heads == 0
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        
         self.d_model = d_model
         self.n_heads = n_heads
-        self.num_kv_heads = num_kv_heads or n_heads
-        assert self.n_heads % self.num_kv_heads == 0
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else n_heads
+        assert self.n_heads % self.num_kv_heads == 0, "n_heads must be divisible by num_kv_heads"
         self.d_k = d_model // n_heads
-        self.dropout = dropout
+        self.dropout = nn.Dropout(dropout)
         self.use_rope = use_rope
         self.rope_base = rope_base
+        self.use_flash = use_flash
 
         self.w_q = nn.Linear(d_model, d_model, bias=False)
         self.w_k = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
         self.w_v = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
         self.linear_out = nn.Linear(d_model, d_model, bias=False)
 
-    def _reshape_q(self, x):
-        B, T, _ = x.shape
-        return self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
-
-    def _reshape_kv(self, x):
-        B, T, _ = x.shape
-        return (
-            self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2),
-            self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2),
-        )
-
     def forward(
         self,
-        query: torch.Tensor,
-        key_value: torch.Tensor,
-        query_mask: Optional[torch.Tensor] = None,
-        kv_mask: Optional[torch.Tensor] = None,
+        query,
+        key_value,
+        query_mask=None,
+        kv_mask=None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        B, T_q, _ = query.shape
-        T_kv = key_value.shape[1]
-        device = query.device
+        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+    ):
+        B, T_q, _ = query.size()
+        T_kv = key_value.size(1)
 
-        Q = self._reshape_q(query)                                 # (B, H, T_q, d_k)
+        Q = self.w_q(query).view(B, T_q, self.n_heads, self.d_k).transpose(1, 2)
 
         if use_cache and cache is not None:
-            K_cache, V_cache = cache
-            K_new, V_new = self._reshape_kv(key_value)
-            K = torch.cat([K_cache, K_new], dim=2)
-            V = torch.cat([V_cache, V_new], dim=2)
+            K_past, V_past = cache
+            K_new = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
+            V_new = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
+            K = torch.cat([K_past, K_new], dim=2)
+            V = torch.cat([V_past, V_new], dim=2)
         else:
-            K, V = self._reshape_kv(key_value)                     # (B, H_kv, T_kv, d_k)
+            K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
+            V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
 
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
             K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
 
-        if kv_mask is not None:
-            kv_mask = kv_mask[:, None, None, :].bool()             # (B,1,1,T_kv)
-
-        if query_mask is not None:
-            q_mask = query_mask[:, None, :, None].bool()           # (B,1,T_q,1)
+        attn_mask = None
+        if kv_mask is not None or query_mask is not None:
             if kv_mask is not None:
-                attn_mask = q_mask.expand(-1, -1, -1, T_kv) & kv_mask.expand(-1, -1, T_q, -1)
+                attn_mask = kv_mask[:, None, None, :].bool()
             else:
-                attn_mask = q_mask.expand(-1, -1, -1, T_kv)
-        else:
-            attn_mask = kv_mask
+                attn_mask = torch.ones(B, 1, 1, T_kv, device=query.device, dtype=torch.bool)
+            if query_mask is not None:
+                query_expanded = query_mask[:, None, :, None].bool()
+                attn_mask = attn_mask.expand(-1, 1, T_q, -1)
+                attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)
 
         out = F.scaled_dot_product_attention(
-            Q, K, V,
+            query=Q,
+            key=K,
+            value=V,
             attn_mask=attn_mask,
-            dropout_p=self.dropout if self.training else 0.0,
+            dropout_p=self.dropout.p,
             is_causal=False,
-            enable_gqa=True,
+            enable_gqa=True
         )
+
         out = out.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
         out = self.linear_out(out)
 
@@ -198,41 +179,32 @@ class CrossAttention(nn.Module):
     
 
 class DecoderBlockCrossAttention(nn.Module):
-    def __init__(
-        self,
-        d_model,
-        d_ff,
-        n_heads,
-        num_kv_heads,
-        rope_base,
-        dropout=0.1,
-        use_cross=True,
-        use_flash=False,
-    ):
+    def __init__(self, d_model, d_ff, n_heads, num_kv_heads, rope_base, dropout=0.1, use_cross=True, use_flash=False):
         super().__init__()
         self.self_attn = MultiHeadAttention(
             d_model=d_model,
-            n_heads=n_heads,
-            num_kv_heads=num_kv_heads,
-            dropout=dropout,
-            is_causal=True,
-            use_rope=True,
-            rope_base=rope_base,
+            n_heads=n_heads, 
+            num_kv_heads=num_kv_heads, 
+            dropout=dropout, 
+            is_causal=True, 
+            use_rope=True, 
+            rope_base=rope_base
         )
         self.feed_forward = FeedForward(d_model, d_ff, dropout)
-
+        
         self.use_cross = use_cross
         if use_cross:
-            self.cross_attn = CrossAttention(
+            self.cross_attn = CrossAttention(        
                 d_model=d_model,
-                n_heads=n_heads * 2,            
+                n_heads=n_heads*2,
                 num_kv_heads=num_kv_heads,
                 dropout=dropout,
                 use_rope=True,
                 rope_base=rope_base,
+                use_flash=True
             )
             self.norm2 = RMSNorm(d_model)
-
+        
         self.norm1 = RMSNorm(d_model)
         self.norm3 = RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
@@ -245,55 +217,40 @@ class DecoderBlockCrossAttention(nn.Module):
         encoder_mask=None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor],
-                             Tuple[torch.Tensor, torch.Tensor]]] = None,
-    ) -> Tuple[torch.Tensor,
-               Optional[Tuple[Tuple[torch.Tensor, torch.Tensor],
-                             Tuple[torch.Tensor, torch.Tensor]]]]:
-        """
-        cache = (self_attn_cache, cross_attn_cache)
-                each is (k, v) tuple
-        """
+        cache: Optional[Tuple[Tuple, Tuple]] = None
+    ):
         x = decoder_input
 
-        # self-attention
+        # Self-attention
         self_cache = cache[0] if use_cache and cache else None
-        x, new_self = self.self_attn(
-            self.norm1(x),
-            attention_mask=decoder_mask,
-            use_cache=use_cache,
-            cache=self_cache,
+        x_attn, new_self_cache = self.self_attn(
+            self.norm1(x), decoder_mask,
+            use_cache=use_cache, cache=self_cache
         )
-        x = x + decoder_input
+        x = x + x_attn
 
-        # cross-attention 
+        # Cross-attention
         cross_cache = cache[1] if use_cache and cache else None
         if self.use_cross:
-            x, new_cross = self.cross_attn(
+            x_cross, new_cross_cache = self.cross_attn(
                 query=self.norm2(x),
                 key_value=encoder_output,
                 query_mask=decoder_mask,
                 kv_mask=encoder_mask,
                 use_cache=use_cache,
-                cache=cross_cache,
+                cache=cross_cache
             )
-            x = x + x 
+            x = x + x_cross
         else:
-            new_cross = None
+            new_cross_cache = None
 
-        # feed-forward 
+        # Feed forward
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
 
         if use_cache:
-            return x, (new_self, new_cross)
+            return x, (new_self_cache, new_cross_cache)
         return x, None
     
-
-
-from typing import Optional, Tuple, Union
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class TransformerDecoderAudioConditioned(nn.Module):
     def __init__(
@@ -407,7 +364,6 @@ class TransformerDecoderAudioConditioned(nn.Module):
         else:
             attn_mask = causal_mask.unsqueeze(0)        # (1, S, S)
 
-        # ------------------- KV-cache initialisation -------------------
         new_cache = [] if use_cache else None
         layer_cache_idx = 0
 
