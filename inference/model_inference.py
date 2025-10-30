@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,7 +39,8 @@ class MultiHeadAttention(nn.Module):
         attention_mask: torch.Tensor = None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        step: int = 0
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, _ = x.size()
 
@@ -47,10 +48,12 @@ class MultiHeadAttention(nn.Module):
 
         if use_cache and cache is not None:
             K_past, V_past = cache
-            K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
-            V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
-            K = torch.cat([K_past, K_new], dim=2)
-            V = torch.cat([V_past, V_new], dim=2)
+            K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
+            V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
+            K_past[:,:,step:step+1,:] = K_new
+            V_past[:,:,step:step+1,:] = V_new
+            K = K_past[:, :, :step+1, :]
+            V = V_past[:, :, :step+1, :]
         else:
             K = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
             V = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
@@ -87,7 +90,7 @@ class MultiHeadAttention(nn.Module):
         out = self.linear_out(out)
 
         if use_cache:
-            return out, (K, V)
+            return out, (K_past, V_past)
         return out, None
     
 
@@ -128,7 +131,8 @@ class CrossAttention(nn.Module):
         kv_mask=None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        step: int = 0
     ):
         B, T_q, _ = query.size()
         T_kv = key_value.size(1)
@@ -136,14 +140,10 @@ class CrossAttention(nn.Module):
         Q = self.w_q(query).view(B, T_q, self.n_heads, self.d_k).transpose(1, 2)
 
         if use_cache and cache is not None:
-            K_past, V_past = cache
-            K_new = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
-            V_new = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
-            K = torch.cat([K_past, K_new], dim=2)
-            V = torch.cat([V_past, V_new], dim=2)
+            K, V = cache
         else:
-            K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
-            V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)
+            K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
+            V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
 
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
@@ -217,38 +217,40 @@ class DecoderBlockCrossAttention(nn.Module):
         encoder_mask=None,
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[Tuple, Tuple]] = None
+        self_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        cross_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        step: int = 0
     ):
         x = decoder_input
 
         # Self-attention
-        self_cache = cache[0] if use_cache and cache else None
-        x_attn, new_self_cache = self.self_attn(
+        x_attn, self_kv = self.self_attn(
             self.norm1(x), decoder_mask,
-            use_cache=use_cache, cache=self_cache
+            use_cache=use_cache, cache=self_kv,
+            step=step
         )
         x = x + x_attn
 
         # Cross-attention
-        cross_cache = cache[1] if use_cache and cache else None
         if self.use_cross:
-            x_cross, new_cross_cache = self.cross_attn(
+            x_cross, cross_kv = self.cross_attn(
                 query=self.norm2(x),
                 key_value=encoder_output,
                 query_mask=decoder_mask,
                 kv_mask=encoder_mask,
                 use_cache=use_cache,
-                cache=cross_cache
+                cache=cross_kv,
+                step=step
             )
             x = x + x_cross
         else:
-            new_cross_cache = None
+            cross_kv = None
 
         # Feed forward
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
 
         if use_cache:
-            return x, (new_self_cache, new_cross_cache)
+            return x, (self_kv, cross_kv)
         return x, None
     
 
@@ -314,29 +316,83 @@ class TransformerDecoderAudioConditioned(nn.Module):
         """(seq_len, seq_len) lower-triangular mask of 1s (attend)"""
         return torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=torch.long))
 
+    def init_kv_cache(self, batch_size, max_len, device):
+        """
+        Init KV-cache both for self-attention and crossattention.
+        
+        Returns:
+            self_cache: list of (self_kv, cross_kv) per layer
+            cross_cache: list of None per layer, it gets init with the first forward pass
+        """
+
+        dtype = next(self.parameters()).dtype
+        num_kv_heads = num_kv_heads if self.num_kv_heads is not None else self.n_heads
+        d_k = self.d_model // self.n_heads
+        self_cache = [
+            (torch.zeros(batch_size,num_kv_heads, max_len, d_k, device=device, dtype=dtype),
+             torch.zeros(batch_size,num_kv_heads, max_len, d_k, device=device, dtype=dtype))
+            for _ in range(self.n_layers)        
+            ]
+        cross_cache = [None for _ in range(self.n_layers)]
+        return self_cache, cross_cache
+
 
     def forward(
         self,
-        input_ids: torch.Tensor,                     # [B, S]  (S=1 during generation)
-        input_audio: torch.Tensor,                   # [B, 4, T_audio]
-        attention_mask: Optional[torch.Tensor] = None,
-        class_ids: Optional[torch.Tensor] = None,
+        input_ids: torch.Tensor,                       # [B, S] (S=1 during generation)
+        audio_emb: torch.Tensor,                       # [B, T_audio', d_model] (precomputed encoder/audio embedding)
+        attention_mask: Optional[torch.Tensor] = None, # [B, S] optional
+        class_ids: Optional[torch.Tensor] = None,      # [B, 1] optional conditional class
+        step: Optional[int] = None, 
         *,
         use_cache: bool = False,
-        cache: Optional[Tuple[torch.Tensor, ...]] = None,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]]:
+        self_cache: Optional[
+            List[Tuple[torch.Tensor, torch.Tensor]]
+        ] = None,  # [(self_k: [B, n_kv_heads, max_len, d_k], self_v: same), ...] per layer
+        cross_cache: Optional[
+            List[Optional[Tuple[torch.Tensor, torch.Tensor]]]
+        ] = None,  # [(cross_k: [B, n_kv_heads, T_audio', d_k], cross_v: same), ...] per layer, may contain None before first forward
+    ) -> Union[
+        torch.Tensor,
+        Tuple[
+            torch.Tensor,
+            Tuple[
+                List[Tuple[torch.Tensor, torch.Tensor]],                # self_cache
+                List[Optional[Tuple[torch.Tensor, torch.Tensor]]],      # cross_cache
+            ],
+        ],
+    ]:
         """
+        Forward pass of the decoder with optional self- and cross-attention caching.
+
         Args:
-            input_ids:      (B, S)
-            input_audio:    (B, 4, T_audio)  – raw codebook indices
-            attention_mask: (B, S)  – 1 = real token, 0 = pad (optional)
-            class_ids:      (B, 1)  – conditioning class (if conditional)
-            use_cache:      bool – whether to return/update KV cache
-            cache:          tuple of (self_kv, cross_kv) per layer, or None
+            input_ids: torch.Tensor
+                Token indices for the current step. Shape: [B, S]
+            audio_emb: torch.Tensor
+                Precomputed encoder/audio embeddings used for cross-attention.
+                Shape: [B, T_audio', d_model]
+            attention_mask: Optional[torch.Tensor]
+                Attention mask over input tokens. Shape: [B, S]. 1 = valid, 0 = pad.
+            class_ids: Optional[torch.Tensor]
+                Class-conditioning IDs, if used. Shape: [B, 1]
+            step: Optional[int] = None
+                Step in the autoregressive generation to slice the self kv cache
+            use_cache: bool
+                Whether to use and return KV cache for autoregressive generation.
+            self_cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
+                One tuple per decoder layer: (self_k, self_v),
+                each shaped [B, n_kv_heads, max_len, d_k].
+                Updated in-place during generation.
+            cross_cache: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]
+                One tuple per decoder layer: (cross_k, cross_v),
+                each shaped [B, n_kv_heads, T_audio', d_k].
+                If None, computed from `audio_emb` on first forward.
 
         Returns:
-            logits: (B, S, vocab_size)
-            if use_cache=True → (logits, new_cache)
+            logits: torch.Tensor
+                Next-token logits. Shape: [B, S, vocab_size]
+            if use_cache:
+                (logits, (self_cache, cross_cache))
         """
         device = input_ids.device
         B, S = input_ids.shape
@@ -347,46 +403,33 @@ class TransformerDecoderAudioConditioned(nn.Module):
             assert class_ids is not None
             x = x + self.cond_embedding(class_ids)          # broadcast over S
 
-        # sum the 4 codebook embeddings → (B, T_audio, d_model)
-        audio_emb = sum(self.codes_embedding[i](input_audio[:, i]) for i in range(4))
-        audio_emb = self.norm_audio(audio_emb)
-        if self.compression:
-            audio_emb = self.audio_compression(audio_emb)   # (B, T_audio', d_model)
+        # sum the 4 codebook embeddings -> (B, T_audio, d_model)
+        #audio_emb = sum(self.codes_embedding[i](input_audio[:, i]) for i in range(4))
+        #audio_emb = self.norm_audio(audio_emb)
+        #if self.compression:
+        #    audio_emb = self.audio_compression(audio_emb)   # (B, T_audio', d_model)
 
-        causal_mask = self._causal_mask(S, device)       # (S, S)
 
-        # pad mask (if provided) – broadcast to (B, S, S)
-        if attention_mask is not None:
-            # attention_mask: (B, S) -> (B, 1, S)
-            pad_mask = attention_mask.unsqueeze(1)
-            # combine: pad_mask * causal_mask
-            attn_mask = pad_mask * causal_mask.unsqueeze(0)
-        else:
-            attn_mask = causal_mask.unsqueeze(0)        # (1, S, S)
+        for i, layer in enumerate(self.layers):
+            self_kv = self_cache[i]
+            cross_kv = cross_cache[i]
 
-        new_cache = [] if use_cache else None
-        layer_cache_idx = 0
-
-        for layer in self.layers:
-            if use_cache:
-                self_kv, cross_kv = (cache[layer_cache_idx] if cache else (None, None))
-            else:
-                self_kv, cross_kv = None, None
-
-            x, self_kv_new, cross_kv_new = layer(
+            x, self_kv, cross_kv = layer(
                 decoder_input=x,
                 encoder_output=audio_emb,
-                decoder_mask=attn_mask,
+                decoder_mask=attention_mask,
                 use_cache=use_cache,
-                cache=(self_kv, cross_kv),
+                self_kv=self_kv,
+                cross_kv=cross_kv,
+                step=step
             )
 
             if use_cache:
-                new_cache.append((self_kv_new, cross_kv_new))
-                layer_cache_idx += 1
+                self_cache[i] = self_kv
+                cross_cache[i] = cross_kv
 
         logits = self.output_projection(x)                  # (B, S, vocab)
 
         if use_cache:
-            return logits, tuple(new_cache)
+            return logits, (self_cache, cross_cache)
         return logits

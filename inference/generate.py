@@ -80,7 +80,7 @@ class Charter(nn.Module):
             return inputs["input_values"], inputs["padding_mask"]
 
 
-    def _preprocess_audio(self, audio_path: str, device: torch.device):
+    def _read_audio(self, audio_path: str, device: torch.device):
         import librosa
         wav, sr = librosa.load(audio_path, sr=24000, mono=True)
         inputs = self.processor(
@@ -105,7 +105,7 @@ class Charter(nn.Module):
         self.to(device)
         self.eval()
 
-        input_values, padding_mask = self._preprocess_audio(audio_path, device)  # [1,1,T]
+        input_values, padding_mask = self._read_audio(audio_path, device)  # [1,1,T]
         total_samples = input_values.size(-1)
         target_sr = 24000
         chunk_sec = 30
@@ -128,12 +128,18 @@ class Charter(nn.Module):
             masks.append(padding_mask[..., s:e])
 
         audio_batch = torch.cat(chunks, dim=0).to(device)          # [B,1,720000]
-        mask_batch  = torch.cat(masks , dim=0).to(device)         # [B,720000]
+        mask_batch  = torch.cat(masks , dim=0).to(device)          # [B,720000]
 
 
         with torch.no_grad():
             enc = self.encoder.encode(audio_batch, mask_batch, bandwidth=3.0)
-            codes = enc.audio_codes.squeeze(0)                    # [B,4,T]
+            codes = enc.audio_codes.squeeze(0)                                  # [B,4,T]
+            # sum the 4 codebook embeddings                                     
+            audio_emb = sum(self.transformer.codes_embedding[i](codes[:, i]) for i in range(4))
+            audio_emb = self.transformer.norm_audio(audio_emb)
+            if self.transformer.compression:
+                audio_emb = self.transformer.audio_compression(audio_emb)       # (B, T_audio', d_model)
+
 
         B = audio_batch.size(0)
         class_ids = (torch.full((B, 1), class_id, dtype=torch.long, device=device)
@@ -141,21 +147,20 @@ class Charter(nn.Module):
 
 
         full_seq_len = int(chunk_sec * 1000 / ms_resolution)   
-        vocab_size   = self.transformer.config.vocab_size
 
         ids = torch.full((B, full_seq_len + 1), self.config.bos_token_id,
                         dtype=torch.long, device=device)
         ids[:, 0] = self.config.bos_token_id
 
-        cache = None
+        self_cache, cross_cache = self.transformer.init_kv_cache(B, full_seq_len, device)
         sample_fn = self._make_sampler(temperature, top_k, device)
 
         for step in tqdm(range(full_seq_len), desc="Lets rock!"):
             cur_token = ids[:, step:step+1]                     # [B,1]
 
-            logits, cache = self.transformer(
-                cur_token, codes, attention_mask=None, class_ids=class_ids,
-                use_cache=True, cache=cache
+            logits, self_cache, cross_cache = self.transformer(
+                cur_token, audio_emb, attention_mask=None, class_ids=class_ids,
+                step=step, use_cache=True, self_cache=self_cache, cross_cache=cross_cache
             )                                                   # logits: [B,1,V]
 
             next_id = sample_fn(logits[:, -1])                  # [B,1]
