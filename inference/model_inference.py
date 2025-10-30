@@ -2,7 +2,37 @@ from typing import Optional, Tuple, Union, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from modules.transformer2 import apply_rotary_emb, swiglu, RMSNorm, TemporalConvPool, FeedForward
+from modules.transformer2 import swiglu, RMSNorm, TemporalConvPool, FeedForward
+
+def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0, position_offset: int = 0) -> torch.Tensor:
+    """
+    Apply Rotary Position Embeddings (RoPE) to a tensor x of shape [B, H, T, D].
+
+    Args:
+        x: tensor [B, n_heads, T, d_k]
+        dim: rotary dimension (usually d_k)
+        base: rotary frequency base
+        position_offset: absolute starting position #required for KV-cache
+    """
+    seq_len = x.size(2)
+    device = x.device
+    dtype = x.dtype
+
+    theta = base ** (-torch.arange(0, dim, 2, device=device, dtype=dtype) / dim)
+    # Offset the positions so that during generation we continue from the cached position
+    positions = torch.arange(position_offset, position_offset + seq_len, device=device, dtype=dtype).unsqueeze(1)
+    angles = positions * theta.unsqueeze(0)
+    sin = torch.sin(angles)
+    cos = torch.cos(angles)
+
+    x1 = x[..., : dim // 2]
+    x2 = x[..., dim // 2 : dim]
+    rotated = torch.cat(
+        [x1 * cos.unsqueeze(0).unsqueeze(1) - x2 * sin.unsqueeze(0).unsqueeze(1),
+         x1 * sin.unsqueeze(0).unsqueeze(1) + x2 * cos.unsqueeze(0).unsqueeze(1)],
+        dim=-1,
+    )
+    return rotated
 
 
 class MultiHeadAttention(nn.Module):
@@ -59,8 +89,16 @@ class MultiHeadAttention(nn.Module):
             V = V_new
 
         if self.use_rope:
-            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+            # use step as position offset when caching, else 0
+            pos_offset = step if use_cache else 0
+            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
+            # For K, apply RoPE to the newly computed K_new only
+            K_to_rotate = K_new if use_cache and cache is not None else K
+            K_rotated = apply_rotary_emb(K_to_rotate, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
+            if use_cache and cache is not None:
+                K = torch.cat([K_past, K_rotated], dim=2)
+            else:
+                K = K_rotated
 
         if attention_mask is not None:
             attn_mask = attention_mask[:, None, None, :].bool()
@@ -135,8 +173,10 @@ class CrossAttention(nn.Module):
             V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
 
         if self.use_rope:
-            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+            pos_offset = step if use_cache else 0
+            Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)  # static encoder → no offset needed
+
 
         # Create combined attention mask
         attn_mask = None
