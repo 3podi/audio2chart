@@ -152,7 +152,8 @@ class Charter(nn.Module):
                         dtype=torch.long, device=device)
         ids[:, 0] = self.config.bos_token_id
 
-        self_cache, cross_cache = self.transformer.init_kv_cache(B, full_seq_len, device)
+        self_cache = [None for _ in range(self.transformer.n_layers)]
+        cross_cache = [None for _ in range(self.transformer.n_layers)]
         sample_fn = self._make_sampler(temperature, top_k, device)
 
         for step in tqdm(range(full_seq_len), desc="Lets rock!"):

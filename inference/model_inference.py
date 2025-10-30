@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from modules.transformer2 import apply_rotary_emb, swiglu, RMSNorm, TemporalConvPool, FeedForward
 
+
 class MultiHeadAttention(nn.Module):
     def __init__(
         self,
@@ -36,7 +37,7 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        attention_mask: torch.Tensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
         *,
         use_cache: bool = False,
         cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
@@ -45,44 +46,32 @@ class MultiHeadAttention(nn.Module):
         B, T, _ = x.size()
 
         Q = self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
+        K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
+        V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
 
+        # Incremental cache
         if use_cache and cache is not None:
             K_past, V_past = cache
-            K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
-            V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
-            K_past[:,:,step:step+1,:] = K_new
-            V_past[:,:,step:step+1,:] = V_new
-            K = K_past[:, :, :step+1, :]
-            V = V_past[:, :, :step+1, :]
+            K = torch.cat([K_past, K_new], dim=2)
+            V = torch.cat([V_past, V_new], dim=2)
         else:
-            K = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
-            V = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2)
+            K = K_new
+            V = V_new
 
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
             K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
 
         if attention_mask is not None:
-            attn_mask = attention_mask.unsqueeze(1)
-            attn_mask = attn_mask.bool()
-
-            causal_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()
-            causal_mask = causal_mask[None, None, :, :]
-            causal_mask = causal_mask.expand(B, 1, -1, -1)
-
-            attn_mask = attn_mask.unsqueeze(2).expand(-1, -1, T, -1)
-            attn_mask = attn_mask & causal_mask
+            attn_mask = attention_mask[:, None, None, :].bool()
         else:
-            attn_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()[None, None, :, :]
-            attn_mask = attn_mask.expand(B, 1, -1, -1) if self.is_causal else None
+            attn_mask = None
 
         out = F.scaled_dot_product_attention(
-            query=Q,
-            key=K,
-            value=V,
+            Q, K, V,
             attn_mask=attn_mask,
             dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=False,
+            is_causal=self.is_causal,
             enable_gqa=True
         )
 
@@ -90,9 +79,9 @@ class MultiHeadAttention(nn.Module):
         out = self.linear_out(out)
 
         if use_cache:
-            return out, (K_past, V_past)
+            return out, (K.detach(), V.detach())
         return out, None
-    
+
 
 class CrossAttention(nn.Module):
     def __init__(
@@ -149,21 +138,20 @@ class CrossAttention(nn.Module):
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
             K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
 
+        # Create combined attention mask
         attn_mask = None
         if kv_mask is not None or query_mask is not None:
             if kv_mask is not None:
-                attn_mask = kv_mask[:, None, None, :].bool()
+                attn_mask = kv_mask[:, None, None, :].bool()  # (B, 1, 1, T_kv)
             else:
                 attn_mask = torch.ones(B, 1, 1, T_kv, device=query.device, dtype=torch.bool)
             if query_mask is not None:
-                query_expanded = query_mask[:, None, :, None].bool()
-                attn_mask = attn_mask.expand(-1, 1, T_q, -1)
-                attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)
-
+                query_expanded = query_mask[:, None, :, None].bool()  # (B, 1, T_q, 1)
+                attn_mask = attn_mask.expand(-1, 1, T_q, -1)  # (B, 1, T_q, T_kv)
+                attn_mask = attn_mask & query_expanded.expand(-1, 1, -1, T_kv)  # Element-wise AND
+        
         out = F.scaled_dot_product_attention(
-            query=Q,
-            key=K,
-            value=V,
+            Q, K, V,
             attn_mask=attn_mask,
             dropout_p=self.dropout.p,
             is_causal=False,
@@ -176,7 +164,7 @@ class CrossAttention(nn.Module):
         if use_cache:
             return out, (K, V)
         return out, None
-    
+
 
 class DecoderBlockCrossAttention(nn.Module):
     def __init__(self, d_model, d_ff, n_heads, num_kv_heads, rope_base, dropout=0.1, use_cross=True, use_flash=False):
@@ -250,9 +238,9 @@ class DecoderBlockCrossAttention(nn.Module):
         x = x + self.dropout(self.feed_forward(self.norm3(x)))
 
         if use_cache:
-            return x, (self_kv, cross_kv)
+            return x, self_kv, cross_kv
         return x, None
-    
+
 
 class TransformerDecoderAudioConditioned(nn.Module):
     def __init__(
@@ -279,7 +267,11 @@ class TransformerDecoderAudioConditioned(nn.Module):
         self.d_model = d_model
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
-        
+
+        self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads
+        self.n_layers = n_layers
+
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.codes_embedding = nn.ModuleList(
             nn.Embedding(codebook_size, d_model) for _ in range(4)
@@ -312,88 +304,27 @@ class TransformerDecoderAudioConditioned(nn.Module):
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
         
 
-    def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """(seq_len, seq_len) lower-triangular mask of 1s (attend)"""
-        return torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=torch.long))
-
-    def init_kv_cache(self, batch_size, max_len, device):
-        """
-        Init KV-cache both for self-attention and crossattention.
-        
-        Returns:
-            self_cache: list of (self_kv, cross_kv) per layer
-            cross_cache: list of None per layer, it gets init with the first forward pass
-        """
-
-        dtype = next(self.parameters()).dtype
-        num_kv_heads = num_kv_heads if self.num_kv_heads is not None else self.n_heads
-        d_k = self.d_model // self.n_heads
-        self_cache = [
-            (torch.zeros(batch_size,num_kv_heads, max_len, d_k, device=device, dtype=dtype),
-             torch.zeros(batch_size,num_kv_heads, max_len, d_k, device=device, dtype=dtype))
-            for _ in range(self.n_layers)        
-            ]
-        cross_cache = [None for _ in range(self.n_layers)]
-        return self_cache, cross_cache
-
-
     def forward(
         self,
         input_ids: torch.Tensor,                       # [B, S] (S=1 during generation)
-        audio_emb: torch.Tensor,                       # [B, T_audio', d_model] (precomputed encoder/audio embedding)
-        attention_mask: Optional[torch.Tensor] = None, # [B, S] optional
-        class_ids: Optional[torch.Tensor] = None,      # [B, 1] optional conditional class
+        audio_emb: torch.Tensor,                       # [B, T_audio', d_model]
+        attention_mask: Optional[torch.Tensor] = None, # [B, S]
+        class_ids: Optional[torch.Tensor] = None,
         step: Optional[int] = None, 
         *,
         use_cache: bool = False,
-        self_cache: Optional[
-            List[Tuple[torch.Tensor, torch.Tensor]]
-        ] = None,  # [(self_k: [B, n_kv_heads, max_len, d_k], self_v: same), ...] per layer
-        cross_cache: Optional[
-            List[Optional[Tuple[torch.Tensor, torch.Tensor]]]
-        ] = None,  # [(cross_k: [B, n_kv_heads, T_audio', d_k], cross_v: same), ...] per layer, may contain None before first forward
+        self_cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        cross_cache: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
     ) -> Union[
         torch.Tensor,
         Tuple[
             torch.Tensor,
             Tuple[
-                List[Tuple[torch.Tensor, torch.Tensor]],                # self_cache
-                List[Optional[Tuple[torch.Tensor, torch.Tensor]]],      # cross_cache
+                List[Tuple[torch.Tensor, torch.Tensor]],                
+                List[Optional[Tuple[torch.Tensor, torch.Tensor]]],      
             ],
         ],
     ]:
-        """
-        Forward pass of the decoder with optional self- and cross-attention caching.
-
-        Args:
-            input_ids: torch.Tensor
-                Token indices for the current step. Shape: [B, S]
-            audio_emb: torch.Tensor
-                Precomputed encoder/audio embeddings used for cross-attention.
-                Shape: [B, T_audio', d_model]
-            attention_mask: Optional[torch.Tensor]
-                Attention mask over input tokens. Shape: [B, S]. 1 = valid, 0 = pad.
-            class_ids: Optional[torch.Tensor]
-                Class-conditioning IDs, if used. Shape: [B, 1]
-            step: Optional[int] = None
-                Step in the autoregressive generation to slice the self kv cache
-            use_cache: bool
-                Whether to use and return KV cache for autoregressive generation.
-            self_cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
-                One tuple per decoder layer: (self_k, self_v),
-                each shaped [B, n_kv_heads, max_len, d_k].
-                Updated in-place during generation.
-            cross_cache: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]
-                One tuple per decoder layer: (cross_k, cross_v),
-                each shaped [B, n_kv_heads, T_audio', d_k].
-                If None, computed from `audio_emb` on first forward.
-
-        Returns:
-            logits: torch.Tensor
-                Next-token logits. Shape: [B, S, vocab_size]
-            if use_cache:
-                (logits, (self_cache, cross_cache))
-        """
         device = input_ids.device
         B, S = input_ids.shape
 
@@ -401,18 +332,11 @@ class TransformerDecoderAudioConditioned(nn.Module):
 
         if self.conditional:
             assert class_ids is not None
-            x = x + self.cond_embedding(class_ids)          # broadcast over S
-
-        # sum the 4 codebook embeddings -> (B, T_audio, d_model)
-        #audio_emb = sum(self.codes_embedding[i](input_audio[:, i]) for i in range(4))
-        #audio_emb = self.norm_audio(audio_emb)
-        #if self.compression:
-        #    audio_emb = self.audio_compression(audio_emb)   # (B, T_audio', d_model)
-
+            x = x + self.cond_embedding(class_ids)
 
         for i, layer in enumerate(self.layers):
-            self_kv = self_cache[i]
-            cross_kv = cross_cache[i]
+            self_kv = None if self_cache is None else self_cache[i]
+            cross_kv = None if cross_cache is None else cross_cache[i]
 
             x, self_kv, cross_kv = layer(
                 decoder_input=x,
@@ -425,11 +349,15 @@ class TransformerDecoderAudioConditioned(nn.Module):
             )
 
             if use_cache:
+                if self_cache is None:
+                    self_cache = [None] * self.n_layers
+                if cross_cache is None:
+                    cross_cache = [None] * self.n_layers
                 self_cache[i] = self_kv
                 cross_cache[i] = cross_kv
 
-        logits = self.output_projection(x)                  # (B, S, vocab)
+        logits = self.output_projection(x)
 
         if use_cache:
-            return logits, (self_cache, cross_cache)
+            return logits, self_cache, cross_cache
         return logits
