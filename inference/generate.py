@@ -205,7 +205,9 @@ class Charter(nn.Module):
 model = Charter.from_pretrained("3podi/charter-v1.0-40-M-best-acc")
 
 # This will RAISE ERROR if < 30s
-seqs = model.generate("../black.mp3", temperature=1.0, top_k=0)
+temperature=1.0
+top_k=5
+seqs = model.generate("../black.mp3", temperature=temperature, top_k=top_k)
 
 seqs = torch.cat(seqs).flatten()
 
@@ -311,4 +313,4 @@ def save_chart_file(filled_text: str, filename: str):
     print(f"✅ Saved chart to {filename}")
 
 
-save_chart_file(new_text, "notes.chart")
+save_chart_file(new_text, f"notes_{temperature}_{top_k}.chart")
