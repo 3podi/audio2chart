@@ -100,18 +100,37 @@ class MultiHeadAttention(nn.Module):
             else:
                 K = K_rotated
 
+        # Create combined attention mask
         if attention_mask is not None:
-            attn_mask = attention_mask[:, None, None, :].bool()
-        else:
-            attn_mask = None
+            # attention_mask: [B, T] -> [B, 1, T] (broadcastable to [B, n_heads, T, T])
+            attn_mask = attention_mask.unsqueeze(1)  # Shape: [B, 1, T]
+            attn_mask = attn_mask.bool()  # 1 = True (keep), 0 = False (mask)
 
+            # Create causal mask (lower triangular)
+            causal_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()  # [T, T]
+            causal_mask = causal_mask[None, None, :, :]  # [1, 1, T, T]
+            causal_mask = causal_mask.expand(B, 1, -1, -1)  # [B, 1, T, T]
+
+            # Combine causal and custom mask: True only where both are True
+            attn_mask = attn_mask.unsqueeze(2).expand(-1, -1, T, -1)  # [B, 1, T, T]
+            attn_mask = attn_mask & causal_mask  # Element-wise AND
+        else:
+            # Default to causal mask if no custom mask provided and is_causal is True
+            attn_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()[None, None, :, :]  # [1, 1, T, T]
+            attn_mask = attn_mask.expand(B, 1, -1, -1)  # [B, 1, T, T] if is_causal else None
+            attn_mask = attn_mask if self.is_causal else None
+
+        # Apply scaled dot-product attention
         out = F.scaled_dot_product_attention(
-            Q, K, V,
+            query=Q,
+            key=K,
+            value=V,
             attn_mask=attn_mask,
             dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=self.is_causal,
+            is_causal=False,  # Disabled since we handle causality manually, lets get it
             enable_gqa=True
         )
+
 
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         out = self.linear_out(out)
@@ -171,11 +190,12 @@ class CrossAttention(nn.Module):
         else:
             K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
             V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
-
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+        
         if self.use_rope:
             pos_offset = step if use_cache else 0
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)  # static encoder → no offset needed
+            #K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)  # static encoder → no offset needed
 
 
         # Create combined attention mask
@@ -193,7 +213,7 @@ class CrossAttention(nn.Module):
         out = F.scaled_dot_product_attention(
             Q, K, V,
             attn_mask=attn_mask,
-            dropout_p=self.dropout.p,
+            dropout_p=self.dropout.p if self.training else 0.0,
             is_causal=False,
             enable_gqa=True
         )
@@ -373,6 +393,14 @@ class TransformerDecoderAudioConditioned(nn.Module):
         if self.conditional:
             assert class_ids is not None
             x = x + self.cond_embedding(class_ids)
+
+        # Adapt audio codes        
+        input_audio = sum( self.codes_embedding[i](audio_emb[:,i,:]) for i in range(4)) 
+        input_audio = self.norm_audio(input_audio)
+        if self.compression:
+            audio_emb = self.audio_compression(input_audio)
+
+
 
         for i, layer in enumerate(self.layers):
             self_kv = None if self_cache is None else self_cache[i]
