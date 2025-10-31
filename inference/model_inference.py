@@ -75,62 +75,52 @@ class MultiHeadAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, _ = x.size()
 
+        # Project to QKV
         Q = self.w_q(x).view(B, T, self.n_heads, self.d_k).transpose(1, 2)
         K_new = self.w_k(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
         V_new = self.w_v(x).view(B, T, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
 
-        # Incremental cache
+        # --- Cache handling ---
         if use_cache and cache is not None:
             K_past, V_past = cache
             K = torch.cat([K_past, K_new], dim=2)
             V = torch.cat([V_past, V_new], dim=2)
+            pos_offset = K_past.size(2) 
         else:
-            K = K_new
-            V = V_new
+            K, V = K_new, V_new
+            pos_offset = 0
 
+        # --- Apply RoPE (rotary embeddings) ---
         if self.use_rope:
-            # use step as position offset when caching, else 0
-            pos_offset = step if use_cache else 0
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
-            # For K, apply RoPE to the newly computed K_new only
-            K_to_rotate = K_new if use_cache and cache is not None else K
-            K_rotated = apply_rotary_emb(K_to_rotate, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
+            K_rot = apply_rotary_emb(
+                K_new, dim=self.d_k, base=self.rope_base, position_offset=pos_offset
+            )
             if use_cache and cache is not None:
-                K = torch.cat([K_past, K_rotated], dim=2)
+                K = torch.cat([K_past, K_rot], dim=2)
             else:
-                K = K_rotated
+                K = K_rot
 
-        # Create combined attention mask
-        if attention_mask is not None:
-            # attention_mask: [B, T] -> [B, 1, T] (broadcastable to [B, n_heads, T, T])
-            attn_mask = attention_mask.unsqueeze(1)  # Shape: [B, 1, T]
-            attn_mask = attn_mask.bool()  # 1 = True (keep), 0 = False (mask)
-
-            # Create causal mask (lower triangular)
-            causal_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()  # [T, T]
-            causal_mask = causal_mask[None, None, :, :]  # [1, 1, T, T]
-            causal_mask = causal_mask.expand(B, 1, -1, -1)  # [B, 1, T, T]
-
-            # Combine causal and custom mask: True only where both are True
-            attn_mask = attn_mask.unsqueeze(2).expand(-1, -1, T, -1)  # [B, 1, T, T]
-            attn_mask = attn_mask & causal_mask  # Element-wise AND
+        # --- Mask handling ---
+        # For incremental decoding, we already prevent access to future positions via the cache,
+        # so we don’t need a causal or attention mask at all.
+        if use_cache:
+            attn_mask = None
+            causal_flag = False
         else:
-            # Default to causal mask if no custom mask provided and is_causal is True
-            attn_mask = torch.tril(torch.ones(T, T, device=x.device)).bool()[None, None, :, :]  # [1, 1, T, T]
-            attn_mask = attn_mask.expand(B, 1, -1, -1)  # [B, 1, T, T] if is_causal else None
-            attn_mask = attn_mask if self.is_causal else None
+            attn_mask = None
+            causal_flag = self.is_causal
 
-        # Apply scaled dot-product attention
+        # --- Scaled dot-product attention ---
         out = F.scaled_dot_product_attention(
             query=Q,
             key=K,
             value=V,
             attn_mask=attn_mask,
             dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=False,  # Disabled since we handle causality manually, lets get it
-            enable_gqa=True
+            is_causal=causal_flag,
+            enable_gqa=True,
         )
-
 
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         out = self.linear_out(out)
@@ -190,7 +180,7 @@ class CrossAttention(nn.Module):
         else:
             K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
             V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base) # at first forward K is fully rotated
         
         if self.use_rope:
             pos_offset = step if use_cache else 0
