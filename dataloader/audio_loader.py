@@ -1,5 +1,6 @@
 import torch.multiprocessing as mp
 mp.set_start_method('spawn', force=True)
+from transformers import AutoProcessor
 
 import time
 import logging
@@ -26,7 +27,6 @@ import platform
 import torch
 import torchaudio.transforms as T
 import random
-from transformers import AutoProcessor
 
 class MusicAugmenter:
     def __init__(self, sample_rate: int = 16000, augment: bool = True):
@@ -112,7 +112,7 @@ DIFF_MAPPING = {
     'Easy': 3
 }
 
-MAX_AUDIO_SAMPLES = 10 * 60 * 16000  # 10 minutes @ 16kHz
+MAX_AUDIO_SAMPLES = 10 * 60 * 24000  # 10 minutes @ 24kHz
 MAX_BYTES = MAX_AUDIO_SAMPLES * 2    # 16-bit = 2 bytes per sample
 
 # --------------------
@@ -155,31 +155,22 @@ def load_opus_ffmpeg(path: str, target_sr: int = 16000, timeout_seconds: int = 1
     except Exception as e:
         raise RuntimeError(f"Failed to load {path} with ffmpeg: {e}")
 
-
-def load_raw_audio(path: str, target_sr: int = 48000) -> Tuple[torch.Tensor, int]:
+def load_raw_audio(path: str, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
     """
-    Load the ENTIRE pre-decoded raw 16-bit PCM stereo audio (no header).
-    Must be preprocessed with ffmpeg: ffmpeg -i input.opus -f s16le -ar 24000 -ac 2 output.raw
-    Returns: [2, T] tensor, sample_rate
+    Load the ENTIRE pre-decoded raw 16-bit PCM audio (no header).
+    Must be preprocessed with ffmpeg: ffmpeg -i input.opus -f s16le -ar target_sr -ac 1 output.raw
+    Returns: [1, T] tensor, sample_rate
     """
     try:
         with open(path, 'rb') as f:
             file_size = os.path.getsize(path)
-            # If file is smaller than max, read entire file
             if file_size <= MAX_BYTES:
                 buf = f.read()
             else:
                 # ONLY READ FIRST MAX_BYTES — skip rest, avoid long audio
                 buf = f.read(MAX_BYTES)
-        
-        # Load as 16-bit stereo audio
         audio_np = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
-        # Reshape to [2, T] (stereo: 2 channels)
-        if len(audio_np) % 2 != 0:
-            audio_np = audio_np[:-1]  # Ensure even number of samples for stereo
-        audio_np = audio_np.reshape(-1, 2).T  # Shape: [2, T]
-        waveform = torch.from_numpy(audio_np)  # Shape: [2, T]
-        #print('just loaded waveform: ', waveform.shape)
+        waveform = torch.from_numpy(audio_np).unsqueeze(0)  # [1, T]
         return waveform, target_sr
     except Exception as e:
         raise RuntimeError(f"Failed to load raw audio {path}: {e}")
@@ -204,7 +195,7 @@ class ChunkedWaveformDataset(Dataset):
         difficulties: List[str] = ['Expert'],
         instruments: List[str] = ['Single'],
         window_seconds: float = 10.0,
-        sample_rate: int = 48000,
+        sample_rate: int = 16000,
         num_pieces: int = 1,
         max_cache_gb: float = 2.0,
         chunk_size: Optional[int] = None,
@@ -216,7 +207,8 @@ class ChunkedWaveformDataset(Dataset):
         precomputed_windows: bool = False,       
         decode_to_raw_on_init: bool = False,     
         raw_dir: str = "raw_audio",              # where to store when converting
-        is_discrete: bool = False
+        is_discrete: bool = False,
+        grid_ms: int = 20
     ):
         self.data = data
         self.bos_token = bos_token
@@ -240,11 +232,12 @@ class ChunkedWaveformDataset(Dataset):
         self.decode_to_raw_on_init = decode_to_raw_on_init
         self.raw_dir = raw_dir
         self.is_discrete = is_discrete
+        self.grid_ms = grid_ms
 
         self.chart_processor = ChartProcessor(difficulties, instruments)
-        self.music_augmenter = MusicAugmenter(augment=augment)
+        self.music_augmenter = MusicAugmenter(augment=augment, sample_rate=self.sample_rate)
 
-        # Pre-cache chart data (CRITICAL optimization)
+        # Pre-cache chart data
         self.chart_cache: Dict[Tuple[str, str], Tuple[List, List, int, float]] = {}
         print("[INFO] Pre-caching chart metadata...")
         for item in data:
@@ -353,7 +346,7 @@ class ChunkedWaveformDataset(Dataset):
         for item in sample_files:
             try:
                 if self.use_predecoded_raw:
-                    size_bytes = item.get("length_samples", 16000*60) * 2  # 16-bit = 2 bytes/sample
+                    size_bytes = item.get("length_samples", self.sample_rate*60) * 2  # 16-bit = 2 bytes/sample
                 else:
                     waveform, _ = load_opus_ffmpeg(item["audio_path"], self.sample_rate, timeout_seconds=30)
                     size_bytes = waveform.element_size() * waveform.numel()
@@ -418,18 +411,6 @@ class ChunkedWaveformDataset(Dataset):
             print(f"Worker {self._get_worker_id()}: Failed to load {audio_path}: {e}")
             return torch.zeros(1, self.num_samples), self.sample_rate
 
-    def _augment_old(self, waveform: torch.Tensor) -> torch.Tensor:
-        if not self.augment:
-            return waveform
-        if random.random() < 0.5:
-            gain_db = random.uniform(-6, 6)
-            waveform = waveform * (10 ** (gain_db / 20))
-        if random.random() < 0.5:
-            noise_amp = 0.005 * waveform.abs().max() * random.random()
-            waveform = waveform + noise_amp * torch.randn_like(waveform)
-        if random.random() < 0.3:
-            waveform = -waveform
-        return waveform
 
     def _augment(self, waveform):
         return self.music_augmenter._augment(waveform)
@@ -451,7 +432,7 @@ class ChunkedWaveformDataset(Dataset):
             # Shouldn't happen due to max_start logic, but just in case
             chunk = chunk[:, :self.num_samples]
 
-        # Now chunk is guaranteed to be [1, self.num_samples]
+        # Chunk is guaranteed to be [1, self.num_samples]
         assert chunk.shape[-1] == self.num_samples, f"Chunk shape {chunk.shape} != {self.num_samples}"
 
         if self.augment:
@@ -478,19 +459,22 @@ class ChunkedWaveformDataset(Dataset):
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
             )
             #logger.info(f"[WORKER {worker_id}] Formatted seconds, got {len(tokenized_chart)} events", extra={'worker_id': worker_id})
-
+            filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
+            
             if self.is_discrete:
 
                 #Extract time and token lists
-                time_list = [note[0] for note in tokenized_chart]
-                tokens_list = [note[1] for note in tokenized_chart]
-
+                time_list = [note[0] for note in filtered]
+                tokens_list = [note[1] for note in filtered]
+                
+                
                 grid = self.tokenizer.discretize_time(
                             time_list, 
                             tokens_list, 
                             self.pad_token, #change this if starting using non equal length discretized seqs
-                            grid_ms=20, 
-                            window_seconds=30
+                            grid_ms=self.grid_ms, 
+                            window_seconds=self.window_seconds,
+                            start_time=start_seconds
                         )
                 
                 diff = [-1] if not self.conditional else [
@@ -505,19 +489,21 @@ class ChunkedWaveformDataset(Dataset):
 
             else:
 
-                filtered = [(t, v, d) for (t, v, d, _) in tokenized_chart if start_seconds <= t < end_seconds]
                 #logger.info(f"[WORKER {worker_id}] Filtered {len(filtered)} events in window", extra={'worker_id': worker_id})
 
                 if filtered:
                     note_times, note_values, note_durations = map(list, zip(*filtered))
                     note_times = [(t - start_seconds) / self.window_seconds for t in note_times]
+                    note_times = [note_times[0]] + [
+                        note_times[i] - note_times[i - 1] for i in range(1, len(note_times))
+                    ]
                 else:
                     note_times, note_values, note_durations = [], [], []
 
                 diff = [-1] if not self.conditional else [
                     mapped_diff for diff, mapped_diff in DIFF_MAPPING.items() if diff in item["difficulty"]
                 ]
-                #print('audio chunk before collare: ', chunk.shape)
+
                 return {
                     "audio": chunk,
                     "note_times": note_times,
@@ -553,8 +539,8 @@ class ChunkedWaveformDataset(Dataset):
                 # Load audio
                 waveform, sr = self._load_audio_file(item["raw_path"])
 
-                #if waveform.shape[0] > 1:
-                #    waveform = waveform.mean(dim=0, keepdim=True)
+                if waveform.shape[0] > 1:
+                    waveform = waveform.mean(dim=0, keepdim=True)
 
                 # Validate chart exists (already cached)
                 key = (item["chart_path"], item["difficulty"])
@@ -619,50 +605,39 @@ class ChunkedWaveformDataset(Dataset):
 # Collator
 # --------------------
 
-def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool, processor) -> Dict:
+def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int, pad_token: int, max_length: int, conditional: bool, processor: Optional[object] = None) -> Dict:
+    """
+    Collate a batch of samples into a dictionary for training.
+    Args:
+        batch: List of lists of dictionaries, each containing 'audio', 'note_values', 'note_times', 'note_durations', 'cond_diff'.
+        bos_token: Beginning-of-sequence token ID.
+        eos_token: End-of-sequence token ID.
+        pad_token: Padding token ID for note values.
+        max_length: Maximum sequence length for padding.
+        conditional: Whether to include 'cond_diff' in output.
+        processor: Audio processor (facebook/Encodec). If None, use raw audio directly.
+    Returns:
+        Dict with 'input_values', 'padding_mask', 'note_values', 'note_times', 'note_durations', 'attention_mask', and optionally 'cond_diff'.
+    """
     flat_batch = [sample for sublist in batch for sample in sublist]
     if not flat_batch:
         return {}
 
     max_batch_len = min(
-        max(len(sample["note_values"]) for sample in flat_batch) + 2,
+        max(len(sample["note_values"]) for sample in flat_batch) + 2,  # +2 for BOS/EOS
         max_length
     )
 
-    batch_input_values, batch_padding_mask, batch_note_values, batch_note_times, batch_note_durations = [], [], [], [], []
-    attention_masks, batch_diff = [], []
-
-    # Verify audio shapes are consistent
-    audio_shapes = [sample['audio'].shape for sample in flat_batch]
-    if len(set(audio_shapes)) > 1:
-        raise ValueError(f"Audio samples have inconsistent shapes: {audio_shapes}")
+    batch_input_values, batch_padding_mask, batch_note_values = [], [], []
+    batch_note_times, batch_note_durations, attention_masks, batch_diff = [], [], [], []
 
     for sample in flat_batch:
-        # Preprocess audio with EnCodec processor
-        audio = sample['audio']  # Assuming audio is a 1D tensor waveform (shape: [samples])
-        #print('audio shape: ', audio.shape)
-        # Ensure audio is 2D: [batch_size=1, sequence_length]
-        #if audio.dim() == 1:
-        #    audio = audio.unsqueeze(0)  # Shape: [1, sequence_length]
-        #elif audio.dim() == 2 and audio.shape[0] == 1:
-        #    audio = audio  # Already in correct shape
-        #else:
-        #    raise ValueError(f"Unexpected audio shape: {audio.shape}")
-
-        # Process audio with EnCodec processor, preserving its default output
-        inputs = processor(
-            raw_audio=audio,
-            sampling_rate=processor.sampling_rate,
-            return_tensors='pt'
-        )
-
-        input_values = inputs["input_values"]  # Shape: [1, channels=1, sequence_length]
-        padding_mask = inputs["padding_mask"]  # Shape: [1, sequence_length]
-
+        audio = sample['audio']  # Expected: [1, T] float tensor
         note_times = [0.0] + sample["note_times"] + [1.0]
         note_durations = [0.0] + sample["note_durations"] + [0.0]
         note_values = [bos_token] + sample["note_values"] + [eos_token]
 
+        # Truncate to max_batch_len
         note_times = note_times[:max_batch_len]
         note_durations = note_durations[:max_batch_len]
         note_values = note_values[:max_batch_len]
@@ -670,68 +645,126 @@ def _collate_batch_impl(batch: List[List[Dict]], bos_token: int, eos_token: int,
         seq_len = len(note_values)
         pad_len = max_batch_len - seq_len
 
+        # Pad sequences
         padded_values = note_values + [pad_token] * pad_len
         padded_times = note_times + [0.0] * pad_len
         padded_durations = note_durations + [0.0] * pad_len
+        attention_mask = [1] * (seq_len - 1) + [0] * (max_batch_len - seq_len + 1)
 
-        attn_len = seq_len - 1
-        attention_mask = [1] * attn_len + [0] * (max_batch_len - attn_len)
+        if processor is not None:
+            # Process audio with processor
+            inputs = processor(
+                raw_audio=audio.squeeze(),  # Remove channel dim if [1, T]
+                sampling_rate=processor.sampling_rate,
+                return_tensors='pt'
+            )
+            input_values = inputs["input_values"].squeeze(0)  # [1, channels=1, seq_len] -> [seq_len]
+            padding_mask = inputs["padding_mask"].squeeze(0)  # [1, seq_len] -> [seq_len]
+        else:
+            # Use raw audio directly
+            input_values = audio.squeeze(0)  # [1, T] -> [T]
+            padding_mask = torch.ones_like(input_values, dtype=torch.long)  # Assume no padding
 
-        batch_input_values.append(input_values.squeeze(0))  # Shape: [channels=1, sequence_length]
-        batch_padding_mask.append(padding_mask.squeeze(0))  # Shape: [sequence_length]
+        batch_input_values.append(input_values)
+        batch_padding_mask.append(padding_mask)
         batch_note_values.append(padded_values)
         batch_note_times.append(padded_times)
         batch_note_durations.append(padded_durations)
         attention_masks.append(attention_mask)
-        batch_diff.append(sample["cond_diff"])
+        if conditional:
+            batch_diff.append(sample["cond_diff"])
 
-    return {
-        "input_values": torch.stack(batch_input_values, dim=0).float(),  # Shape: [batch_size, channels=1, sequence_length]
-        "padding_mask": torch.stack(batch_padding_mask, dim=0).long(),  # Shape: [batch_size, sequence_length]
+    # Stack and ensure correct types
+    output = {
+        "input_values": torch.stack(batch_input_values, dim=0).float(),
+        "padding_mask": torch.stack(batch_padding_mask, dim=0).long(),
         "note_values": torch.tensor(batch_note_values, dtype=torch.long),
         "note_times": torch.tensor(batch_note_times, dtype=torch.float),
         "note_durations": torch.tensor(batch_note_durations, dtype=torch.float),
         "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
-        "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
     }
+    if conditional:
+        output["cond_diff"] = torch.tensor(batch_diff, dtype=torch.long)
+
+    return output
 
 
-def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_token: int, conditional: bool) -> Dict:
+
+def _collate_batch_impl_discrete(batch: List[List[Dict]], bos_token: int, eos_token: int, conditional: bool, processor: Optional[object] = None) -> Dict:
+    """
+    Collate a batch of samples into a dictionary for training.
+    Args:
+        batch: List of lists of dictionaries, each containing 'audio', 'note_values', 'cond_diff'.
+        bos_token: Beginning-of-sequence token ID.
+        eos_token: End-of-sequence token ID.
+        conditional: Whether to include 'cond_diff' in output.
+        processor: Audio processor (facebook/Encodec). If None, use raw audio directly.
+    Returns:
+        Dict with 'input_values', 'padding_mask', 'note_values', and optionally 'cond_diff'.
+    """
     flat_batch = [sample for sublist in batch for sample in sublist]
-
-
-    batch_audio, batch_note_values = [], []
-    batch_diff = []
+    batch_audio, batch_note_values, batch_diff, batch_padding_mask = [], [], [], []
 
     for sample in flat_batch:
-        audio = sample['audio']
+        audio = sample['audio']  # Expected: [1, T] float tensor
         note_values = [bos_token] + sample["note_values"] + [eos_token]
+        
+        if processor is not None:
+            # Process audio with processor
+            inputs = processor(
+                raw_audio=audio.squeeze(),  # Remove channel dim if [1, T]
+                sampling_rate=processor.sampling_rate,
+                return_tensors='pt'
+            )
+            input_values = inputs["input_values"].squeeze(0)  # [channels=1, sequence_length] -> [sequence_length]
+            padding_mask = inputs["padding_mask"].squeeze(0)  # [1, sequence_length] -> [sequence_length]
+        else:
+            # Use raw audio directly
+            input_values = audio.squeeze(0)  # [1, T] -> [T]
+            padding_mask = torch.ones_like(input_values, dtype=torch.long)  # Assume no padding
 
-
-        batch_audio.append(audio)
+        batch_audio.append(input_values)
+        batch_padding_mask.append(padding_mask)
         batch_note_values.append(note_values)
-        batch_diff.append(sample["cond_diff"])
-    
-    #print('Collator audio shape: ', torch.stack(batch_audio,dim=0).shape)
-    return {
-        "audio": torch.stack(batch_audio, dim=0).float(),
+        if conditional:
+            batch_diff.append(sample["cond_diff"])
+
+    # Stack and ensure correct types
+    output = {
+        "input_values": torch.stack(batch_audio, dim=0).float(),
+        "padding_mask": torch.stack(batch_padding_mask, dim=0).long(),
         "note_values": torch.tensor(batch_note_values, dtype=torch.long),
-        "cond_diff": torch.tensor(batch_diff, dtype=torch.long) if conditional else None,
     }
+    if conditional:
+        output["cond_diff"] = torch.tensor(batch_diff, dtype=torch.long)
+
+    return output
 
 class AudioChartCollator:
-    def __init__(self, bos_token: int, eos_token: int, pad_token: int = -100, max_length: int = 512, conditional: bool = False, is_discrete: bool = False):
+    def __init__(
+            self, 
+            bos_token: int, 
+            eos_token: int, 
+            pad_token: int = -100, 
+            max_length: int = 512, 
+            conditional: bool = False, 
+            is_discrete: bool = False,
+            use_processor: bool = False,
+        ):
+
         self.bos_token = bos_token
         self.eos_token = eos_token
         self.pad_token = pad_token
         self.max_length = max_length
         self.conditional = conditional
-        self.processor = AutoProcessor.from_pretrained("facebook/encodec_48khz")
-        
+        if use_processor:
+            self.processor = AutoProcessor.from_pretrained("facebook/encodec_24khz")
+        else:
+            self.processor = None
 
         if is_discrete:
             self._collate_fn = _collate_batch_impl_discrete
-            self._args = (bos_token, eos_token, conditional)
+            self._args = (bos_token, eos_token, conditional, self.processor)
         else:
             self._collate_fn = _collate_batch_impl
             self._args = (bos_token, eos_token, pad_token, max_length, conditional, self.processor)
@@ -748,6 +781,7 @@ def create_chunked_audio_chart_dataloader(
     data: List[Dict],
     tokenizer,
     window_seconds: float = 10.0,
+    sample_rate: int = 16000,
     difficulties: List[str] = ['Expert'],
     instruments: List[str] = ['Single'],
     batch_size: int = 32,
@@ -764,11 +798,12 @@ def create_chunked_audio_chart_dataloader(
     decode_to_raw_on_init: bool = False,
     raw_dir: str = "raw_audio",
     augment: bool = False,
-    is_discrete: bool = False
+    is_discrete: bool = False,
+    grid_ms: int =  20,
+    use_processor: bool = False
 ) -> Tuple[DataLoader, Dict]:
     """
-    High-performance dataloader factory with all optimizations.
-    Set use_predecoded_raw=True and predecode files with ffmpeg beforehand for maximum speed.
+    Set use_predecoded_raw=True and predecode files with ffmpeg beforehand.
     """
 
     # Adjust cache per worker
@@ -790,7 +825,8 @@ def create_chunked_audio_chart_dataloader(
         pad_token=vocab['<PAD>'],
         max_length=max_length,
         conditional=conditional,
-        is_discrete=is_discrete
+        is_discrete=is_discrete,
+        use_processor=use_processor
     )
 
     dataset = ChunkedWaveformDataset(
@@ -802,6 +838,7 @@ def create_chunked_audio_chart_dataloader(
         difficulties=difficulties,
         instruments=instruments,
         window_seconds=window_seconds,
+        sample_rate=sample_rate,
         num_pieces=num_pieces,
         max_cache_gb=max_cache_gb,
         chunk_size=chunk_size,
@@ -813,7 +850,8 @@ def create_chunked_audio_chart_dataloader(
         precomputed_windows=precomputed_windows,
         decode_to_raw_on_init=decode_to_raw_on_init,
         raw_dir=raw_dir,
-        is_discrete=is_discrete
+        is_discrete=is_discrete,
+        grid_ms=grid_ms
     )
 
     print(f"[INFO] Total items: {len(dataset)}, chunk_size={dataset.chunk_size}, workers={num_workers}")
