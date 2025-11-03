@@ -37,12 +37,12 @@ def main():
     parser.add_argument("--genre", type=str, default=None, help="Genre.")
     parser.add_argument("--charter", type=str, default=None, help="Charter name.")
 
-    # Output path
+    # Output path (optional)
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Destination .chart file path. Defaults to <audio_basename>.chart"
+        help="Destination folder for output. Defaults to ./<song_name>/notes.chart"
     )
 
     args = parser.parse_args()
@@ -71,8 +71,9 @@ def main():
     model_tag = args.model_name.split("/")[-1]
     default_charter = args.charter or f"audio2chart/{model_tag}-{args.temperature}-{args.top_k}"
 
+    song_name = args.name or os.path.splitext(os.path.basename(args.audio_path))[0]
     metadata = {
-        "name": args.name or os.path.splitext(os.path.basename(args.audio_path))[0],
+        "name": song_name,
         "artist": args.artist or "audio2chart",
         "album": args.album or "audio2chart",
         "genre": args.genre or "audio2chart",
@@ -82,11 +83,14 @@ def main():
     # Fill and save chart
     filled_text = fill_expert_single(decoded_full, metadata=metadata)
 
-    # Determine output path
-    output_path = args.output
-    if not output_path:
-        base = os.path.splitext(os.path.basename(args.audio_path))[0]
-        output_path = os.path.join(os.getcwd(), f"{base}.chart")
+    # Determine output folder and file path
+    if args.output:
+        output_folder = args.output
+    else:
+        output_folder = os.path.join(os.getcwd(), song_name)
+
+    os.makedirs(output_folder, exist_ok=True)
+    output_path = os.path.join(output_folder, "notes.chart")
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(filled_text)
