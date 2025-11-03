@@ -3,7 +3,7 @@ from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
 
 #from dataloader.audio_loader2 import create_audio_chart_dataloader
-from dataloader.audio_loader5 import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
+from dataloader.audio_loader import create_chunked_audio_chart_dataloader as create_audio_chart_dataloader
 from dataloader.utils_dataloader import find_audio_files, split_json_entries_by_audio_raw
 from modules.trainer import WaveformTransformerDiscrete
 from modules.utils_train import set_seed_everything, LogGradientNorm, validate_dataset
