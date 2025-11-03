@@ -143,6 +143,8 @@ audio2chart/
 │   ├── tokenizer.py       # Tokenization utilities
 │   ├── time_conversion.py # Convert note times to tick values and viceversa
 │   └── chart_writer.py    # Writes decoded charts to .chart format
+├── notebooks/
+│   └── generating.py      # Colab notebook for charting
 ├── baseline.py            # Baseline training script
 ├── main.py                # Audio-conditioned training script
 ├── generate.py            # Main inference entry point
