@@ -125,15 +125,19 @@ def convert_notes_to_seconds(notes, bpm_events, resolution, offset=0.0):
 def time_to_tick(time_sec, bpm, resolution):
     return int(round(time_sec * bpm / 60.0 * resolution))
 
-def convert_notes_to_ticks(notes, fixed_bpm=200, resolution=480):
+def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480):
 
-    seconds_list = []
-    tick_list = []
-    for note in notes:
-        seconds_list.append(note[0])
+    attrs = {
+        'is5': False,
+        'is6': False,
+        'isS': False,
+    }
 
-    for t, note in zip(seconds_list, notes):
-        tick = time_to_tick(t, fixed_bpm, resolution)
-        lane, duration = note[-2:]
+    tick_notes = []
 
+    for t, note in zip(time_list, tokens_list):
+        if note != 34:
+            tick = time_to_tick(t, fixed_bpm, resolution)
+            tick_notes.append((tick,note,0,attrs))
 
+    return tick_notes
