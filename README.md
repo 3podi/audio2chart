@@ -137,17 +137,29 @@ You can explore all model variants in the
 ```
 audio2chart/
 ├── inference/
-│   ├── model_inference.py # Inference model with KV-cache support
-│   └── engine.py          # Inference engine
+│   ├── model_inference.py     # Inference model with KV-cache support
+│   └── engine.py              # Inference engine
 ├── chart/
-│   ├── tokenizer.py       # Tokenization utilities
-│   ├── time_conversion.py # Convert note times to tick values and viceversa
-│   └── chart_writer.py    # Writes decoded charts to .chart format
+│   ├── tokenizer.py           # Tokenization utilities
+│   ├── time_conversion.py     # Convert note times to tick values and viceversa
+│   └── chart_writer.py        # Writes decoded charts to .chart format
+├── dataloader/
+│   ├── convert_to_raw.py      # Script to convert audio to raw format
+│   ├── audio_loader.py        # Dataloader for audio conditioned training
+│   ├── notes_loader.py        # Dataloader for notes only training
+│   └── utils_dataloader.py    # Dataset utils
+├── modules/
+│   ├── models.py              # torch.nn models
+│   ├── trainer.py             # Lightning training modules
+│   ├── transformer_layers.py  # torch.nn transformer layers
+│   ├── transformer2.py        # torch.nn layers and final training model 
+│   ├── utils_trian.py         # Training utils
+│   └── scheduler.py           # Learning rate scheduler used during training
 ├── notebooks/
-│   └── generating.py      # Colab notebook for charting
-├── baseline.py            # Baseline training script
-├── main.py                # Audio-conditioned training script
-├── generate.py            # Main inference entry point
+│   └── generating.py          # Colab notebook for charting
+├── baseline.py                # Baseline training script
+├── main.py                    # Audio-conditioned training script
+├── generate.py                # Main inference entry point
 └── requirements.txt
 ```
 
