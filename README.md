@@ -37,7 +37,7 @@ You can try audio2chart instantly in your browser without setup.
 To run locally (with GPU support):
 
 ```
-git clone https://github.com/YOUR_USERNAME/audio2chart.git
+git clone https://github.com/3podi/audio2chart.git
 cd audio2chart
 pip install -r requirements.txt
 ```
