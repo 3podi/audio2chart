@@ -185,7 +185,7 @@ class CrossAttention(nn.Module):
         if self.use_rope:
             pos_offset = step if use_cache else 0
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base, position_offset=pos_offset)
-            #K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)  # static encoder → no offset needed
+            #K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)  # static encoder no offset needed
 
 
         # Create combined attention mask
@@ -385,12 +385,10 @@ class TransformerDecoderAudioConditioned(nn.Module):
             x = x + self.cond_embedding(class_ids)
 
         # Adapt audio codes        
-        input_audio = sum( self.codes_embedding[i](audio_emb[:,i,:]) for i in range(4)) 
-        input_audio = self.norm_audio(input_audio)
-        if self.compression:
-            audio_emb = self.audio_compression(input_audio)
-
-
+        #input_audio = sum( self.codes_embedding[i](audio_emb[:,i,:]) for i in range(4)) 
+        #input_audio = self.norm_audio(input_audio)
+        #if self.compression:
+        #    audio_emb = self.audio_compression(input_audio)
 
         for i, layer in enumerate(self.layers):
             self_kv = None if self_cache is None else self_cache[i]
