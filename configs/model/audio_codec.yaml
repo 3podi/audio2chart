@@ -1,4 +1,4 @@
-name: EXP_ENCODEC_24
+name: discrete_encodec
 
 freeze_encoder: true
 use_processor: true
@@ -6,7 +6,7 @@ sample_rate: 24000
 
 #Seanet encoder config
 encoder:
-  _target_: modules.models3.Encodec
+  _target_: modules.models.Encodec
 
 #Transformer Decocer config
 transformer:

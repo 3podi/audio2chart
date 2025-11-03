@@ -1,4 +1,4 @@
-name: EXP_DISCR_2_augment
+name: discrete_seanet
 
 freeze_encoder: false
 use_processor: false
