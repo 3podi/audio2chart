@@ -22,10 +22,11 @@ Output: a playable `.chart` file compatible with Clone Hero
 
 You can try audio2chart instantly in your browser without setup.
 
-1. Click the badge at the top of this README:  
+1. Click on the following botton:
+     
    [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
 
-2. The notebook will:
+3. The notebook will:
    - Install dependencies  
    - Download a pretrained model from Hugging Face  
    - Transcribe your own `.mp3` or `.wav` file into a `.chart` file  
@@ -33,7 +34,7 @@ You can try audio2chart instantly in your browser without setup.
 
 ## Local Installation
 
-To run locally (with GPU support recommended):
+To run locally (with GPU support):
 
 ```
 git clone https://github.com/YOUR_USERNAME/audio2chart.git
