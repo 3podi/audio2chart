@@ -15,6 +15,7 @@ The repository contains everything needed to:
 - Train or reproduce the baseline sequence model
 
 The main use case is simple:
+
 Input: an `.wav`, or `.mp3` audio file  
 Output: a playable `.chart` file compatible with Clone Hero
 
