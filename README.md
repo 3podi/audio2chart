@@ -2,7 +2,9 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
 
-audio2chart is an open-source project that automatically transcribes audio files into Guitar Hero / Clone Hero `.chart` files using neural nets.  
+
+**audio2chart** is an open-source deep learning framework for **audio-to-chart generation**, which converts raw audio into structured `.chart` representations used in Guitar Hero–style rhythm games.  
+The repository provides a complete and codebase for both **training** and **inference**, including data processing pipelines, neural network architectures, and ready-to-use scripts for generating playable charts from real songs.
 
 ---
 
