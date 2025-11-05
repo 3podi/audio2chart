@@ -52,32 +52,39 @@ Install it from: https://pytorch.org/get-started/locally/
 
 ## Inference
 
-`generate.py` lets you transcribe an audio file into a `.chart` file using a pretrained model from Hugging Face.
+`generate.py` allows you to transcribe an audio file into a `.chart` file using a pretrained model from [Hugging Face](https://huggingface.co/3podi).
 
-### Example usage
-
-```
-python generate.py path/to/song
+```bash
+python generate.py path/to/audio.mp3
 ```
 
-### Arguments
+This will automatically download the default model (`3podi/charter-v1.0-40-M-best-acc`), generate chart tokens from the input audio, and save the resulting `.chart` file in the current directory.
 
-audio_path — Path to input audio (must be ≥30 s)  
---model_name — Hugging Face model ID or local path (default: 3podi/charter-v1.0-40-M-best-acc)  
---temperature — Sampling temperature (default: 1.0)  
---top_k — Top-K sampling (default: 5)  
---name — Song title (default: file basename)  
---artist — Artist name (default: "audio2chart")  
---album — Album name (default: "audio2chart")  
---genre — Genre (default: "audio2chart")  
---charter — Charter name (default: audio2chart/<model>-<temp>-<topk>)  
---output — Output path (.chart) (default: ./<basename>.chart)
+---
+
+### Full Example with Custom Parameters
+
+```bash
+python generate.py path/to/audio.mp3 \
+  --model_name 3podi/charter-v1.0-40-M-best-acc \
+  --temperature <float_temperature> \
+  --top_k <int_topk> \
+  --name "<song_title>" \
+  --artist "<artist_name>" \
+  --album "<album_name>" \
+  --genre "<genre_name>" \
+  --charter "<charter_name>" \
+  --output <output_path>.chart
+```
+
+---
 
 The script will:
-1. Load the pretrained model  
-2. Generate dense token sequences conditioned on audio  
-3. Decode them into time-aligned notes  
-4. Write a `.chart` file to the specified output path
+1. Load the specified pretrained model  
+2. Encode the input audio  
+3. Generate dense token sequences conditioned on audio  
+4. Decode them into time-aligned notes  
+5. Write the final `.chart` file to the output path
 
 ---
 
