@@ -87,21 +87,24 @@ The script will:
 
 ## Baseline Model
 
-`baseline.py` implements a simple sequence-to-sequence baseline that predicts chart tokens directly (without audio conditioning).
+`baseline.py` implements a simple Transformer decoder that predicts chart tokens without any audio conditioning.
 
-This model can be trained and evaluated using publicly available tokenized chart data.
+The baseline can be trained and evaluated on publicly available tokenized chart datasets and serves as a reference model for pure symbolic note prediction.
 
-### Running the baseline
+### Running the Baseline
 
+```bash
+python baseline.py
 ```
-python baseline.py 
-```
 
-Typical configuration options:
-- --epochs: number of training epochs  
-- --batch_size: training batch size  
-- --lr: learning rate  
-- --save_dir: where to save checkpoints
+Training and evaluation are configured via **Hydra**, which automatically loads the default configuration files located in the `configs/` directory.  
+All parameters such as learning rate, batch size, epochs, or save directory, are defined in the YAML files.
+
+To override a parameter at runtime, simply append it to the command line, for example:
+
+```bash
+python baseline.py is_discrete=True window_seconds=30 grid_ms=40
+```
 
 ---
 
