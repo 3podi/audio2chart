@@ -60,9 +60,8 @@ python generate.py path/to/audio.mp3
 
 This will automatically download the default model (`3podi/charter-v1.0-40-M-best-acc`), generate chart tokens from the input audio, and save the resulting `.chart` file in the current directory.
 
----
 
-### Full Example with Custom Parameters
+Full example with custom parameters:
 
 ```bash
 python generate.py path/to/audio.mp3 \
@@ -76,8 +75,6 @@ python generate.py path/to/audio.mp3 \
   --charter "<charter_name>" \
   --output <output_path>.chart
 ```
-
----
 
 The script will:
 1. Load the specified pretrained model  
