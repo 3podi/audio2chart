@@ -90,6 +90,17 @@ The script will:
 `baseline.py` implements a simple Transformer decoder that predicts chart tokens without any audio conditioning.
 
 The baseline can be trained and evaluated on publicly available tokenized chart datasets and serves as a reference model for pure symbolic note prediction.
+The dataset is available at:  
+👉 [**3podi/audio2chart-charts**](https://huggingface.co/datasets/3podi/audio2chart-charts)
+
+It contains a `charts.zip` archive with preprocessed chart data ready for training.
+
+To download and extract the dataset:
+
+```bash
+huggingface-cli download 3podi/audio2chart-charts charts.zip --repo-type dataset -d <data_path>
+unzip <data_path>/charts.zip -d <data_path>/charts
+```
 
 ### Running the Baseline
 
@@ -103,7 +114,7 @@ All parameters such as learning rate, batch size, epochs, or save directory, are
 To override a parameter at runtime, simply append it to the command line, for example:
 
 ```bash
-python baseline.py is_discrete=True window_seconds=30 grid_ms=40
+python baseline.py root_folder=<data_path> is_discrete=True window_seconds=30 grid_ms=40
 ```
 
 ---
