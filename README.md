@@ -1,7 +1,7 @@
 # audio2chart
 
 [![arXiv](https://img.shields.io/badge/arXiv-2511.03337-b31b1b.svg)](https://arxiv.org/abs/2511.03337)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart_charting.ipynb)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Collection-orange)](https://huggingface.co/collections/3podi/audio2chart-v10)
 
 
@@ -32,7 +32,7 @@ You can try audio2chart instantly in your browser without setup.
 
 1. Click on the following botton:
      
-   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
+     [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart_charting.ipynb)
 
 3. The notebook will:
    - Install dependencies  
