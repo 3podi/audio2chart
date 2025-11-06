@@ -24,6 +24,7 @@ optimizer:
 max_epochs: 200
 gpus: 1
 precision: 'bf16'
+save_run: false
 
 
 #Wandb
