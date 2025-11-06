@@ -140,13 +140,13 @@ You can load and run the pretrained **Charter** model directly from [Hugging Fac
 from inference.engine import Charter
 
 # Load the pretrained audio-to-chart model
-model = Charter.from_pretrained("3podi/charter-v1.0-40-M-best-acc")
+model = Charter.from_pretrained("3podi/charter-v1.0-40-M-best-acc-nonpad")
 
 # Generate chart tokens from an audio file
 seqs = model.generate("path/to/song.mp3")
 ```
 
-The default model `3podi/charter-v1.0-40-M-best-acc` offers a strong balance between quality and speed.  
+The default model `3podi/charter-v1.0-40-M-best-acc-nonpad` offers a strong balance between quality and speed.  
 
 Other available models vary by:
 - **Time resolution:** `20` ms or `40` ms (controls temporal precision)
