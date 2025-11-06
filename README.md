@@ -70,7 +70,7 @@ Full example with custom parameters:
 
 ```bash
 python generate.py path/to/audio.mp3 \
-  --model_name 3podi/charter-v1.0-40-M-best-acc \
+  --model_name 3podi/charter-v1.0-40-M-best-acc-nonpad \
   --temperature <float_temperature> \
   --top_k <int_topk> \
   --name "<song_title>" \
