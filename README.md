@@ -63,7 +63,7 @@ Install it from: https://pytorch.org/get-started/locally/
 python generate.py path/to/audio.mp3
 ```
 
-This will automatically download the default model (`3podi/charter-v1.0-40-M-best-acc`), generate chart tokens from the input audio, and save the resulting `.chart` file in the current directory.
+This will automatically download the default model (`3podi/charter-v1.0-40-M-best-acc-nonpad`), generate chart tokens from the input audio, and save the resulting `.chart` file in the current directory.
 
 
 Full example with custom parameters:
