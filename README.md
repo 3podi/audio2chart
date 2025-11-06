@@ -2,6 +2,8 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2511.03337-b31b1b.svg)](https://arxiv.org/abs/2511.03337)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Collection-orange)](https://huggingface.co/collections/3podi/audio2chart-v10)
+
 
 **audio2chart** is an open-source deep learning framework for **audio to chart generation**, converting raw audio into structured `.chart` files used in Guitar Hero style rhythm games.  
 A complete description of the methodology, architecture, and experiments can be found in our [arXiv publication](https://arxiv.org/abs/2511.03337).
@@ -194,14 +196,16 @@ audio2chart/
 If you use audio2chart or its models in your work, please consider citing:
 
 ```
-
+@misc{tripodi2025audio2chartendendaudio,
+      title={audio2chart: End to End Audio Transcription into playable Guitar Hero charts}, 
+      author={Riccardo Tripodi},
+      year={2025},
+      eprint={2511.03337},
+      archivePrefix={arXiv},
+      primaryClass={eess.AS},
+      url={https://arxiv.org/abs/2511.03337}, 
+}
 ```
-
----
-
-## License
-
-See LICENSE for details.
 
 ---
 
