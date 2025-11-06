@@ -1,10 +1,13 @@
 # audio2chart
 
+[![arXiv](https://img.shields.io/badge/arXiv-2511.03337-b31b1b.svg)](https://arxiv.org/abs/2511.03337)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/3podi/audio2chart/blob/main/notebooks/audio2chart-charting.ipynb)
 
+**audio2chart** is an open-source deep learning framework for **audio to chart generation**, converting raw audio into structured `.chart` files used in Guitar Hero style rhythm games.  
+A complete description of the methodology, architecture, and experiments can be found in our [arXiv publication](https://arxiv.org/abs/2511.03337).
 
-**audio2chart** is an open-source deep learning framework for **audio-to-chart generation**, which converts raw audio into structured `.chart` representations used in Guitar Hero–style rhythm games.  
-The repository provides a complete and codebase for both **training** and **inference**, including data processing pipelines, neural network architectures, and ready-to-use scripts for generating playable charts from real songs.
+The repository provides a full codebase for both **training** and **inference**, including data processing pipelines, neural network architectures, and ready to use scripts for generating playable charts from real songs.
+
 
 ---
 
