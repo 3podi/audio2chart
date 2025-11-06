@@ -10,7 +10,7 @@ Charter = "###charter###"
 Album = "###album###"
 Year = ", 2022"
 Offset = 0
-Resolution = 192
+Resolution = ###resolution###
 Player2 = bass
 Difficulty = 3
 PreviewStart = 0
@@ -23,7 +23,7 @@ MusicStream = "song.ogg"
 [SyncTrack]
 {
 0 = TS 4
-0 = B 200000
+0 = B ###bpm###000
 }
 
 [ExpertSingle]

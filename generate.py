@@ -27,8 +27,8 @@ def main():
         default="3podi/charter-v1.0-40-M-best-acc",
         help="Model identifier or path. (default: 3podi/charter-v1.0-40-M-best-acc)"
     )
-    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
-    parser.add_argument("--top_k", type=int, default=5, help="Top-k sampling parameter.")
+    parser.add_argument("--temperature", type=float, default=0.5, help="Sampling temperature.")
+    parser.add_argument("--top_k", type=int, default=32, help="Top-k sampling parameter.")
 
     # Optional metadata
     parser.add_argument("--name", type=str, default=None, help="Song title.")
@@ -36,6 +36,8 @@ def main():
     parser.add_argument("--album", type=str, default=None, help="Album name.")
     parser.add_argument("--genre", type=str, default=None, help="Genre.")
     parser.add_argument("--charter", type=str, default=None, help="Charter name.")
+    parser.add_argument("--bpm", type=int, default=200, help="Chart bpm.")
+    parser.add_argument("--resolution", type=int, default=480, help="Chart resolution.")
 
     # Output path (optional)
     parser.add_argument(
@@ -64,7 +66,7 @@ def main():
 
     # Convert to ticked notes
     time_list = [i * ms_resolution / 1000 for i in range(len(seqs))]
-    ticked_notes = convert_notes_to_ticks(seqs, time_list)
+    ticked_notes = convert_notes_to_ticks(seqs, time_list, fixed_bpm=args.bpm, resolution=args.resolution)
     decoded_full = tokenizer.decode(ticked_notes)
 
     # Prepare metadata
@@ -78,6 +80,8 @@ def main():
         "album": args.album or "audio2chart",
         "genre": args.genre or "audio2chart",
         "charter": default_charter,
+        "bpm": args.bpm,
+        "resolution": args.resolution
     }
 
     # Fill and save chart
