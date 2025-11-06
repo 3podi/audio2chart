@@ -216,4 +216,10 @@ https://huggingface.co/3podi
 
 ---
 
+## Acknowledgments
+
+This project was supported by **AMD** and the **AMD Developer Cloud**, whose compute resources made training and experimentation possible.
+
+---
+
 ⭐ If you find this project useful, please give it a star!
