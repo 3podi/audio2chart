@@ -38,7 +38,7 @@ def fill_expert_single(notes: list[tuple], metadata: dict) -> str:
     # Fill the Song block
     for key, value in metadata.items():
         if value:
-            template_text = template_text.replace(f'###{str(key)}###', value)
+            template_text = template_text.replace(f'###{str(key)}###', str(value))
         else:
             template_text = template_text.replace(f'###{str(key)}###', 'audio2chart')
 
