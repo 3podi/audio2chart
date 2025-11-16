@@ -208,8 +208,7 @@ If you use audio2chart or its models in your work, please consider citing:
 
 ## Contact
 
-For questions, discussions, or contributions, open an Issue on GitHub or contact the maintainer via Hugging Face:  
-https://huggingface.co/3podi
+For questions, discussions, or contributions, open an Issue on GitHub.
 
 ---
 
