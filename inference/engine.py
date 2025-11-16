@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import EncodecModel, AutoProcessor
 from huggingface_hub import hf_hub_download
-import torchaudio
 
 from inference.model_inference import TransformerDecoderAudioConditioned
 from tqdm import tqdm
@@ -65,19 +64,6 @@ class Charter(nn.Module):
         state = torch.load(bin_path, map_location="cpu")
         model.transformer.load_state_dict(state)
         return model
-
-    def _preprocess_audio_old(self, audio_path: str, device: torch.device):
-            wav, sr = torchaudio.load(audio_path)
-            if wav.size(0) > 1:
-                wav = wav.mean(0, keepdim=True)  # to mono
-
-            inputs = self.processor(
-                raw_audio=wav.squeeze(0).numpy(),  # [T]
-                sampling_rate=sr,
-                return_tensors="pt"
-            ).to(device)
-
-            return inputs["input_values"], inputs["padding_mask"]
 
 
     def _read_audio(self, audio_path: str, device: torch.device):
