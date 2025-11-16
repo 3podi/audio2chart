@@ -50,9 +50,6 @@ cd audio2chart
 pip install -r requirements.txt
 ```
 
-You’ll also need PyTorch (with CUDA if available).  
-Install it from: https://pytorch.org/get-started/locally/
-
 ---
 
 ## Inference
