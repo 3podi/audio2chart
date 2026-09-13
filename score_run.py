@@ -61,9 +61,12 @@ def parse_args():
     parser.add_argument("--top_k", type=int, default=32)
     parser.add_argument("--guidance", type=float, default=0.0,
                         help="Classifier-free-style guidance against a neighbouring "
-                             "chunk as the negative. Measured on three clips, 1.5 took "
-                             "responsiveness from -0.050 to +0.479 (human +0.249) and "
-                             "density from 9.0 to 21.3 nps (human 21.01). Costs a second "
+                             "chunk as the negative. It moves DENSITY toward human "
+                             "(18.1 -> 21.4 nps against a human 21.01, replicated on "
+                             "three clips and again on eight). It does NOT reliably "
+                             "improve responsiveness: a three-clip sweep suggested "
+                             "+0.479, and eight paired clips gave a median +0.040 -> "
+                             "+0.072, better on 5 of 8, paired t=+0.65. Costs a second "
                              "decoder branch, hence max_parallel_chunks.")
     parser.add_argument("--export-to", type=Path, default=None)
     parser.add_argument("--config", type=Path,

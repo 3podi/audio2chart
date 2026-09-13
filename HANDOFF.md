@@ -56,6 +56,34 @@ failure than the original, but a pad weight a little under 1.0 is the knob if it
 - 8 ms at a 12 s window is still free data (97.0% -> 98.8% usable windows at the same 1502
   tokens) and has not been taken.
 
+### Guidance moves density, not conditioning
+
+`--guidance` runs a second decoder branch against a neighbouring chunk as the negative
+(`_contrast_audio`), which works without training because the model has no notion of "no
+audio" to contrast against. Note that `model.transformer.audio_drop` is *not* the lever it
+looks like -- it is `nn.Dropout` on the audio embedding, feature regularisation, not the
+sample-level conditioning dropout classifier-free guidance would need.
+
+What guidance 1.5 does, measured twice:
+
+| | guidance 0 | guidance 1.5 | human |
+|---|---|---|---|
+| nps | 18.1 | **21.4** | 21.01 |
+| responsiveness, median of 8 | +0.040 | +0.072 | +0.249 |
+
+**Density improves and replicates. Conditioning does not.** A first sweep over three clips
+put responsiveness at +0.479 and looked like conditioning solved; eight paired clips give a
+median of +0.072, better on 5 of 8, paired t = +0.65, p = 0.36. That is nothing.
+
+The reason the three-clip result was so wrong is worth keeping: **responsiveness is
+extremely noisy per clip.** At guidance 0 alone the eight clips span -0.682 to +0.191, and
+human charts span -0.547 to +0.717. Three samples of a quantity with that spread will show
+almost anything. Six is not obviously enough either -- the +0.133 median from the six-chart
+scoring and the +0.040 here are the same model on different clips.
+
+Conditioning remains the open problem. The ablation (+1.5% on note positions, 14 of 20
+batches) is the more stable measure and says the same thing: real, weak.
+
 ### Run it like this
 
     model.pad_class_weight=1.0        # not 0.1
