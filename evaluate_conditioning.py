@@ -141,14 +141,32 @@ def main():
         tag = "pretrained (no fine-tune)"
 
     model = model.to(device).eval()
+    # Keep drawing until `--batches` scored batches exist, re-iterating the loader if it
+    # runs dry. Asking for 100 used to yield 20: the validation loader exhausts well
+    # before that, `report` prints len(rows), and every run came out "hurt 15/20"
+    # whatever was requested -- so the metric could not be tightened, and the spread
+    # across checkpoints (+0.8%, +1.0%, +1.5%) could not be told from noise.
+    #
+    # Each pass draws different windows from the same songs, so extra passes are fresh
+    # samples rather than repeats.
     rows = []
+    passes = 0
     with torch.no_grad():
-        for index, batch in enumerate(val_loader):
-            if index >= args.batches:
+        while len(rows) < args.batches and passes < 20:
+            passes += 1
+            drawn = 0
+            for batch in val_loader:
+                if len(rows) >= args.batches:
+                    break
+                drawn += 1
+                result = score(model, batch, tokenizer.pad_id, device)
+                if result is not None:
+                    rows.append(result)
+            if drawn == 0:
                 break
-            result = score(model, batch, tokenizer.pad_id, device)
-            if result is not None:
-                rows.append(result)
+    if passes > 1:
+        print(f"  (loader exhausted after {len(rows) // passes} scored batches; "
+              f"made {passes} passes to reach {len(rows)})")
     report(tag, rows)
 
 
