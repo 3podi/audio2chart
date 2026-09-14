@@ -175,6 +175,67 @@ def build_callbacks(config: DictConfig, monitor: str, mode: str = "max") -> list
     return callbacks
 
 
+VALIDATION_BUDGET = 0.25
+"""Fraction of a run's time that may be validation before it is worth saying so."""
+
+VALIDATION_BATCH_COST = 11.0
+"""How much longer a validation batch takes than a training one, measured.
+
+Counting raw batches understates validation badly. A validation item is `val_num_pieces`
+windows where a training item is `train_num_pieces` -- 4 against 1 in the configs used
+here -- so a validation batch is several times the work despite having no backward pass.
+Measured on the burst-corruption run: 2.2 it/s training against 0.19 it/s validating,
+which is 11.6x. Rounded down, so the warning errs toward staying quiet.
+"""
+
+
+def validation_budget(config: DictConfig, val_check_interval, limit_val_batches):
+    """Report what validation will actually cost, in the units the run was asked in.
+
+    configs/default.yaml has carried a comment about this for a while -- Lightning's
+    val_check_interval counts BATCHES while ModelCheckpoint's every_n_train_steps counts
+    OPTIMIZER STEPS -- and the comment did not stop it happening again. A run meant to
+    validate twice was set to val_check_interval=500 with accumulate_grad_batches=8 and
+    max_steps=1000, which is 8000 batches, so it validates sixteen times: about four
+    hours of validation around one hour of training.
+
+    A comment is not a guard. This does the arithmetic and prints it, so the mistake is
+    visible in the first seconds of a run rather than in its wall-clock time.
+
+    Returns the lines to print, so it can be tested without capturing stdout.
+    """
+    if not val_check_interval or not isinstance(val_check_interval, int):
+        return []
+
+    accumulate = int(OmegaConf.select(config, "trainer.accumulate_grad_batches",
+                                      default=1) or 1)
+    max_steps = int(OmegaConf.select(config, "trainer.max_steps", default=-1) or -1)
+
+    steps_between = val_check_interval / accumulate
+    lines = [f"Validating every {val_check_interval} batches "
+             f"= every {steps_between:.4g} optimizer steps "
+             f"(accumulate_grad_batches={accumulate})."]
+    if max_steps <= 0:
+        return lines
+
+    total_batches = max_steps * accumulate
+    runs = total_batches / val_check_interval
+    lines[0] += f" {runs:.4g} validation run(s) over {max_steps} steps."
+
+    if limit_val_batches and isinstance(limit_val_batches, int):
+        val_batches = runs * limit_val_batches
+        val_cost = val_batches * VALIDATION_BATCH_COST
+        share = val_cost / (total_batches + val_cost)
+        if share > VALIDATION_BUDGET:
+            lines.append(
+                f"  WARNING: {val_batches:.0f} validation batches against "
+                f"{total_batches} training batches, and a validation batch costs about "
+                f"{VALIDATION_BATCH_COST:.0f}x a training one -- roughly {share:.0%} of "
+                f"this run will be validation. val_check_interval counts BATCHES; to "
+                f"validate every N optimizer steps set it to N * {accumulate}.")
+    return lines
+
+
 def build_trainer(config: DictConfig, logger: object, monitor: str) -> L.Trainer:
     use_gpu = config.trainer.gpus > 0
     # val_check_interval also sets how often a checkpoint can be written, because the
@@ -184,6 +245,9 @@ def build_trainer(config: DictConfig, logger: object, monitor: str) -> L.Trainer
         name: OmegaConf.select(config, f"trainer.{name}")
         for name in ("limit_train_batches", "limit_val_batches", "val_check_interval")
     }
+    for line in validation_budget(config, limits["val_check_interval"],
+                                  limits["limit_val_batches"]):
+        print(line)
     return L.Trainer(
         max_epochs=config.trainer.max_epochs,
         max_steps=OmegaConf.select(config, "trainer.max_steps", default=-1),
