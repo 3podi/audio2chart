@@ -592,11 +592,18 @@ class WaveformTransformerDiscrete(L.LightningModule):
     def _encode_audio(self, audio, padding_mask):
         context = torch.no_grad() if self.freeze_encoder else torch.enable_grad()
         # Lightning wraps the whole step in bf16 autocast, which is a 3.4x win on the
-        # transformer and a 5.5x loss here: cuDNN has no fused LSTM kernel for bf16, so
-        # SEANet's recurrence over 2250 timesteps falls back to an unfused path.
+        # transformer and a 5.5x loss for Encodec: cuDNN has no fused LSTM kernel for
+        # bf16, so SEANet's recurrence over 2250 timesteps falls back to an unfused path.
         # Measured 0.130s per call in fp32 against 0.712s under autocast, for codes
         # that are quantiser indices either way -- there is no precision to gain.
-        with context, torch.autocast(self.device.type, enabled=False):
+        #
+        # That reasoning is about an LSTM, so the encoder declares it rather than the
+        # trainer assuming it. MERT is a plain transformer with no recurrence, and
+        # forcing 95M parameters over 1124 frames into fp32 costs both speed and the
+        # VRAM headroom this card does not have -- the Encodec path already peaked at
+        # 7.7 GB of 8.
+        wants_fp32 = getattr(self.audio_encoder, "prefers_fp32", True)
+        with context, torch.autocast(self.device.type, enabled=not wants_fp32):
             if self.audio_output_kind == "codes":
                 output = self.audio_encoder(
                     audio.float(), padding_mask, return_embeddings=False

@@ -32,6 +32,9 @@ class Encodec(nn.Module):
         self.checkpoint = checkpoint
         self.bandwidth = float(bandwidth)
         self.output_kind = "codes"
+        # SEANet's LSTM has no fused bf16 kernel; see WaveformTransformerDiscrete
+        # ._encode_audio. 0.130s per call in fp32 against 0.712s under autocast.
+        self.prefers_fp32 = True
         self.model = EncodecModel.from_pretrained(checkpoint)
         self.codebook_dim = self.model.config.codebook_dim  # 128
         self.target_bandwidths = self.model.config.target_bandwidths  # [1.5, 3, 6, 12, 24]
@@ -563,6 +566,8 @@ class MERT(nn.Module):
         from transformers import HubertConfig, HubertModel
 
         self.output_kind = "features"
+        # No recurrence here, so the fp32 forcing Encodec needs is pure cost.
+        self.prefers_fp32 = False
         self.checkpoint = checkpoint
 
         raw = json.loads(

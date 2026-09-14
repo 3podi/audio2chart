@@ -49,6 +49,11 @@ def parse_args():
     parser.add_argument("--config-name", default="audio")
     parser.add_argument("--batches", type=int, default=20)
     parser.add_argument("--songs", type=int, default=40)
+    parser.add_argument("--override", "-o", action="append", default=[],
+                        help="Hydra override, repeatable. A checkpoint must be scored "
+                             "with the architecture it was trained with -- a MERT run "
+                             "needs `-o model=audio_mert`, or this builds an Encodec "
+                             "model and the weights will not match it.")
     parser.add_argument("--split-folder", default=None,
                         help="Evaluate on this split's val.json. Without it the config "
                              "leaves split_folder null, which makes load_data_splits "
@@ -62,9 +67,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_config(config_dir, config_name, split_folder=None):
+def load_config(config_dir, config_name, split_folder=None, overrides=()):
     with initialize_config_dir(version_base=None, config_dir=config_dir):
-        cfg = compose(config_name=config_name)
+        cfg = compose(config_name=config_name, overrides=list(overrides))
     with open_dict(cfg):
         cfg.loader.num_workers = 0
         cfg.loader.val_batch_size = MIN_BATCH
@@ -126,7 +131,7 @@ def main():
     from modules.trainer import WaveformTransformerDiscrete
 
     cfg = load_config(args.config_dir or os.path.join(root, "configs"),
-                      args.config_name, args.split_folder)
+                      args.config_name, args.split_folder, args.override)
     print(f"val set: {cfg.data.split_folder or '(fresh split of the whole library)'}")
     tokenizer = SimpleTokenizerGuitar()
     train_files, val_files = load_data_splits(cfg)
