@@ -4,7 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from inference.layers import FeedForward, RMSNorm, TemporalConvPool
 
-def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0, position_offset: int = 0) -> torch.Tensor:
+def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0,
+                     position_offset: int = 0,
+                     position_scale: float = 1.0) -> torch.Tensor:
     """
     Apply Rotary Position Embeddings (RoPE) to a tensor x of shape [B, H, T, D].
 
@@ -20,7 +22,9 @@ def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0, position_
 
     theta = base ** (-torch.arange(0, dim, 2, device=device, dtype=dtype) / dim)
     # Offset the positions so that during generation we continue from the cached position
-    positions = torch.arange(position_offset, position_offset + seq_len, device=device, dtype=dtype).unsqueeze(1)
+    positions = (torch.arange(position_offset, position_offset + seq_len,
+                              device=device, dtype=dtype)
+                 * position_scale).unsqueeze(1)
     angles = positions * theta.unsqueeze(0)
     sin = torch.sin(angles)
     cos = torch.cos(angles)
@@ -158,6 +162,10 @@ class CrossAttention(nn.Module):
         self.w_k = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
         self.w_v = nn.Linear(d_model, self.num_kv_heads * self.d_k, bias=False)
         self.linear_out = nn.Linear(d_model, d_model, bias=False)
+        # Token steps in a full window, set by the decoder from grid_ms and
+        # window_seconds. Only needed when decoding with a cache, where the query is one
+        # step long and cannot supply the ratio itself.
+        self.token_length = None
 
     def forward(
         self,
@@ -180,7 +188,14 @@ class CrossAttention(nn.Module):
         else:
             K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
             V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2).contiguous()
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base) # at first forward K is fully rotated
+            # Audio positions rescaled into token units, matching
+            # modules.training_transformer. Without it the two sequences sit on
+            # different clocks and a time-aligned pair lands at a different
+            # relative offset at every position. Decoding with a cache makes T_q
+            # 1, so the full token length has to come from the config instead.
+            reference = self.token_length if (use_cache and self.token_length) else T_q
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base,
+                                 position_scale=(reference / T_kv) if T_kv else 1.0)
         
         if self.use_rope:
             pos_offset = step if use_cache else 0
@@ -310,6 +325,8 @@ class TransformerDecoderAudioConditioned(nn.Module):
             conditional=False, 
             use_flash=False,
             codebook_size=1024,
+            grid_ms=20,
+            window_seconds=30.0,
             **kwargs,
         ):
         super().__init__()
@@ -330,6 +347,11 @@ class TransformerDecoderAudioConditioned(nn.Module):
         if self.conditional:
             self.cond_embedding = nn.Embedding(4, d_model)
         
+        # Token steps in one window. Cross-attention needs it to rescale the audio
+        # positions into token units while decoding with a cache, where the query is a
+        # single step and cannot supply the ratio itself.
+        self.token_length = int(round(float(window_seconds) * 1000.0 / float(grid_ms)))
+
         self.layers = nn.ModuleList()
         for _ in range(n_layers):
             self.layers.append(
@@ -344,6 +366,12 @@ class TransformerDecoderAudioConditioned(nn.Module):
                     use_flash=use_flash
                 )
             )
+
+        # Hand every cross-attention the window length, so cached decoding rescales the
+        # audio positions the same way a full forward does.
+        for layer in self.layers:
+            if getattr(layer, "cross_attn", None) is not None:
+                layer.cross_attn.token_length = self.token_length
         
         self.norm_audio = nn.LayerNorm(d_model)
         self.audio_drop = nn.Dropout(audio_drop)

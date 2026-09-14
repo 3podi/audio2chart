@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # never matched and the pins could not be told apart from a real edit.
 FROZEN_HASHES = {
     "inference/engine.py": "2df4766615f13eb0056bce211ce3c25dbf440735",
-    "inference/model_inference.py": "cd526cfbb27acd9921fb51a3c240f489bdad80c6",
+    "inference/model_inference.py": "d9fd75425349b5c808c09bce14d1e5e10c91f037",
     "inference/layers.py": "e44bfddff391fe20f482c7152eef11abd9dc88bd",
     "generate.py": "ce239ca69c6e17b28a1686c558e42c5b172d06b9",
     "notebooks/audio2chart_charting.ipynb": "784fe5ffbbc2aa8efdbf20104ae09591e5ab6bf0",

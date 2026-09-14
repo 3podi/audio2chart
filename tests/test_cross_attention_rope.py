@@ -89,3 +89,65 @@ class CrossAttentionRopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InferenceMatchesTrainingTests(unittest.TestCase):
+    """The rescale has to reach inference, including the cached decoding path.
+
+    Training and inference keep separate implementations, and the training change alone
+    made them disagree -- test_training_pipeline caught it. Cached decoding is the
+    harder half: the query is one step long there, so T_q/T_kv cannot supply the ratio
+    and the window length has to come from the config.
+    """
+
+    def _models(self, **extra):
+        from inference.model_inference import (
+            TransformerDecoderAudioConditioned as Inference)
+        from modules.training_transformer import (
+            TransformerDecoderAudioConditioned as Training)
+
+        arguments = dict(vocab_size=35, pad_token_id=-1, eos_token_id=33,
+                         d_model=32, n_heads=4, num_kv_heads=2, n_layers=2,
+                         dropout=0.0, audio_drop=0.0, conditional=False,
+                         use_flash=False, codebook_size=64)
+        torch.manual_seed(1)
+        training = Training(**arguments).eval()
+        inference = Inference(**arguments, **extra).eval()
+        inference.load_state_dict(training.state_dict(), strict=True)
+        return training, inference
+
+    def test_cached_decoding_matches_a_full_forward(self):
+        """Step-by-step with a cache must equal one pass over the whole sequence."""
+        steps, frames = 12, 9
+        # grid_ms/window_seconds chosen so token_length is `steps`.
+        training, inference = self._models(grid_ms=10, window_seconds=steps / 100.0)
+        self.assertEqual(inference.token_length, steps)
+
+        tokens = torch.randint(0, 35, (1, steps))
+        codes = torch.randint(0, 64, (1, 4, frames))
+        with torch.no_grad():
+            audio = sum(inference.codes_embedding[i](codes[:, i]) for i in range(4))
+            audio = inference.norm_audio(audio)
+            whole = inference(tokens, audio)
+
+            self_cache = [None] * inference.n_layers
+            cross_cache = [None] * inference.n_layers
+            stepwise = []
+            for step in range(steps):
+                logits, self_cache, cross_cache = inference(
+                    tokens[:, step:step + 1], audio, step=step, use_cache=True,
+                    self_cache=self_cache, cross_cache=cross_cache)
+                stepwise.append(logits[:, -1])
+            stepwise = torch.stack(stepwise, dim=1)
+
+        torch.testing.assert_close(whole, stepwise, atol=2e-4, rtol=2e-3)
+
+    def test_a_full_inference_forward_matches_training(self):
+        training, inference = self._models()
+        tokens = torch.randint(0, 35, (2, 5))
+        codes = torch.randint(0, 64, (2, 4, 7))
+        with torch.no_grad():
+            expected = training(tokens, codes)
+            audio = sum(inference.codes_embedding[i](codes[:, i]) for i in range(4))
+            actual = inference(tokens, inference.norm_audio(audio))
+        torch.testing.assert_close(expected, actual)
