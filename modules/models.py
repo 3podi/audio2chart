@@ -615,11 +615,21 @@ class MERT(nn.Module):
         variance = values.var(dim=-1, keepdim=True, unbiased=False)
         values = (values - mean) / torch.sqrt(variance + 1e-7)
 
+        output = self.model(values, output_hidden_states=True)
         if self.layer_weights is None:
-            output = self.model(values, output_hidden_states=True)
             return output.hidden_states[self.layer]
 
-        output = self.model(values, output_hidden_states=True)
-        stacked = torch.stack(output.hidden_states, dim=0)
-        weights = torch.softmax(self.layer_weights, dim=0).view(-1, 1, 1, 1)
-        return (stacked * weights).sum(dim=0)
+        # The blend has to be built with gradients even though the backbone is frozen.
+        #
+        # _encode_audio wraps a frozen encoder in torch.no_grad(), which is right for the
+        # 95M backbone and wrong for these 13 scalars: under no_grad they get no gradient
+        # and the "learned" weighting is a fixed uniform average. Caught by running a step
+        # on CPU and reading layer_weights.grad, which was None.
+        #
+        # Re-enabling here keeps the backbone frozen -- the stacked states arrive with
+        # requires_grad False and stay detached -- while letting the multiply record a
+        # graph node for the weights alone.
+        with torch.enable_grad():
+            stacked = torch.stack(output.hidden_states, dim=0)
+            weights = torch.softmax(self.layer_weights, dim=0).view(-1, 1, 1, 1)
+            return (stacked * weights).sum(dim=0)

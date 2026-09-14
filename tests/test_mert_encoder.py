@@ -120,3 +120,48 @@ def _normalised(values):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(AVAILABLE, "MERT checkpoint not reachable")
+class MertLayerBlendTests(unittest.TestCase):
+    """The blend over MERT's 13 hidden states has to actually learn.
+
+    _encode_audio wraps a frozen encoder in torch.no_grad(), which is right for the 95M
+    backbone and wrong for these 13 scalars: under no_grad they receive no gradient and
+    the "learned" weighting is a fixed uniform average of every layer. The first MERT
+    build had exactly that bug -- a CPU training step left layer_weights.grad as None --
+    and the encoder looked entirely healthy otherwise.
+    """
+
+    def test_the_weights_get_a_gradient_even_inside_no_grad(self):
+        from modules.models import MERT
+
+        encoder = MERT()
+        with torch.no_grad():
+            features = encoder(torch.randn(1, 1, 24000 * 2))
+        features.sum().backward()
+
+        self.assertIsNotNone(encoder.layer_weights.grad,
+                             "the layer blend received no gradient")
+        self.assertGreater(float(encoder.layer_weights.grad.abs().sum()), 0.0)
+
+    def test_the_backbone_stays_frozen(self):
+        """Only the 13 scalars learn; the 95M parameters must not."""
+        from modules.models import MERT
+
+        encoder = MERT()
+        with torch.no_grad():
+            features = encoder(torch.randn(1, 1, 24000 * 2))
+        features.sum().backward()
+
+        backbone = [p.grad for p in encoder.model.parameters() if p.grad is not None]
+        self.assertEqual(backbone, [], "the frozen backbone accumulated gradients")
+
+    def test_a_pinned_layer_needs_no_gradient_path(self):
+        """layer=N is a plain selection, so there is nothing to learn."""
+        from modules.models import MERT
+
+        encoder = MERT(layer=6)
+        with torch.no_grad():
+            features = encoder(torch.randn(1, 1, 24000 * 2))
+        self.assertFalse(features.requires_grad)
