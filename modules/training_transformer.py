@@ -29,16 +29,26 @@ class RMSNorm(torch.nn.Module):
         t = t * torch.rsqrt(torch.mean(t**2, dim=-1, keepdim=True) + self.eps)
         return (t * self.scale).to(dtype)
 
-def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0) -> torch.Tensor:
+def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0,
+                     position_scale: float = 1.0) -> torch.Tensor:
     """
     Apply Rotary Position Embeddings (RoPE) to the input tensor.
+
+    `position_scale` puts a sequence into somebody else's units. RoPE encodes relative
+    position, which assumes both sides of an attention are on one clock. In
+    cross-attention here they are not: a token step is 10 ms and an audio frame after
+    compression is 26.7 ms, so a time-aligned pair is (token i, audio frame 0.375 i) and
+    the relative offset RoPE sees for it runs 0, 234, 469, 937 across a window. Scaling
+    the audio positions by the length ratio puts an aligned pair at offset 0 everywhere,
+    which is the relationship the model needs to be able to express.
     """
     seq_len = x.size(2)
     device = x.device
     dtype = x.dtype
 
     theta = base ** (-torch.arange(0, dim, 2, device=device, dtype=dtype) / dim)
-    positions = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
+    positions = (torch.arange(seq_len, device=device, dtype=dtype)
+                 * position_scale).unsqueeze(1)
     angles = positions * theta.unsqueeze(0)
     sin = torch.sin(angles)
     cos = torch.cos(angles)
@@ -183,10 +193,19 @@ class CrossAttention(nn.Module):
         K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
         V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
 
-        # Apply RoPE if enabled
+        # Apply RoPE if enabled.
+        #
+        # The audio positions are rescaled into token units. Without this the two
+        # sequences are on different clocks -- 10 ms a token against 26.7 ms an audio
+        # frame -- and "the same moment in time" lands at a different relative offset at
+        # every position, which is the one thing RoPE cannot represent. Measured on the
+        # model trained without it: sliding a song two seconds against its own chart cost
+        # 23% of what handing it a different song cost, so three quarters of what it took
+        # from the audio was time-invariant.
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base,
+                                 position_scale=(T_q / T_kv) if T_kv else 1.0)
 
         # Create combined attention mask
         attn_mask = None
