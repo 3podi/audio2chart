@@ -140,12 +140,29 @@ def beat_aligned_tempo_events(bpm, phase, onset, resolution):
     so a beat line is the strongest claim the analysis actually supports -- which is
     also what Robert specified.
 
+    A song whose first note falls inside the opening beat gets no lead-in at all: one
+    event at tick 0 at the real tempo, and the note sits at tick 0 where the human
+    charter put it.
+
     Returns (bpm_events, anchor_tick, anchor_seconds).
     """
     period = 60.0 / bpm
     anchor = phase + round((onset - phase) / period) * period
-    while anchor < period:          # a chart needs at least one beat of lead-in
-        anchor += period
+
+    # A song that starts immediately starts at tick 0.
+    #
+    # This used to read `while anchor < period: anchor += period`, on the grounds that a
+    # chart needs a beat of lead-in. But `anchor` is *where the first note goes*, so
+    # pushing it forward moved the first note a whole beat later than the audio's. On
+    # LESBIAN VAMPIRE KILLERS the first lyric is at t=0 and the human chart opens with a
+    # note at tick 0; ours opened at tick 480, a beat late, having skipped the opening
+    # words. Robert, playing it: "the first note should've been at position 0 because
+    # that is when the first vocal lyric was".
+    #
+    # When the first onset lands inside the opening beat, the honest tempo map is a
+    # single event at tick 0 carrying the real tempo. There is nothing to stretch.
+    if anchor < period / 2:
+        return [(0, int(round(bpm * 1000)))], 0, 0.0
 
     beats = max(1, int(round(anchor / period)))
     lead_bpm = beats * 60.0 / anchor

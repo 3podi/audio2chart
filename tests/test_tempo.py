@@ -64,11 +64,40 @@ class TempoTest(unittest.TestCase):
         assert abs(one_beat_later - (anchor_tick + RESOLUTION)) <= 1
 
 
-    def test_there_is_always_room_for_a_lead_in(self):
-        """A song whose first note is at t=0 still needs a tick-0 event before it."""
-        _, anchor_tick, anchor = beat_aligned_tempo_events(120.0, 0.0, 0.0, RESOLUTION)
+    def test_a_song_that_starts_immediately_starts_at_tick_zero(self):
+        """This test used to assert the opposite, and the opposite was the bug.
+
+        It required anchor_tick >= RESOLUTION -- that the first note can never sit at
+        tick 0. But the anchor is *where the first note goes*, so forcing a beat of
+        lead-in moved the first note a beat later than the audio's. On LESBIAN VAMPIRE
+        KILLERS the first lyric is at t=0 and the human chart opens at tick 0; ours
+        opened at tick 480 and skipped the opening words.
+        """
+        events, anchor_tick, anchor = beat_aligned_tempo_events(
+            120.0, 0.0, 0.0, RESOLUTION)
+        assert anchor_tick == 0
+        assert anchor == 0.0
+        # One event, at tick 0, carrying the real tempo -- nothing to stretch.
+        assert events == [(0, 120000)]
+
+    def test_a_real_intro_still_gets_its_lead_in(self):
+        """The fix must not throw away the lead-in where one is genuinely needed."""
+        events, anchor_tick, anchor = beat_aligned_tempo_events(
+            120.0, 0.10, 2.05, RESOLUTION)
         assert anchor_tick >= RESOLUTION
-        assert anchor > 0.0
+        assert anchor > 0.5
+        assert len(events) == 2
+        assert events[0][0] == 0 and events[1][0] == anchor_tick
+
+    def test_an_onset_just_inside_the_first_beat_is_not_pushed_a_beat_late(self):
+        """The case that broke: onset at 0.05 s with a 0.5 s beat.
+
+        The old rule moved the anchor to 0.5 s, ten times later than the note actually
+        was. Anything inside the first half-beat now anchors at zero instead.
+        """
+        _, anchor_tick, anchor = beat_aligned_tempo_events(
+            120.0, 0.02, 0.05, RESOLUTION)
+        assert anchor_tick == 0, "a note 50 ms in must not be charted half a second in"
 
 
     def test_snapping_lands_on_the_beat_grid_the_map_defines(self):
