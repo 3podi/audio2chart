@@ -7,8 +7,9 @@ from inference.engine import Charter
 from chart.time_conversion import choose_snap, convert_notes_to_ticks
 from chart.tokenizer import SimpleTokenizerGuitar
 from chart.chart_writer import fill_expert_single
-from chart.tempo import (parse_sync_track, detect_tempo, first_onset,
-                         beat_aligned_tempo_events)
+from chart.tempo import (parse_sync_track, detect_tempo, detect_tempo_map,
+                         first_onset, beat_aligned_tempo_events,
+                         beat_aligned_tempo_map)
 
 
 def _use_utf8_stdout():
@@ -80,6 +81,18 @@ def main():
         help="Estimate the tempo from the audio instead of trusting --bpm."
     )
     parser.add_argument(
+        "--tempo-map",
+        action="store_true",
+        help="Estimate tempo per segment instead of once for the whole song, and emit a "
+             "[SyncTrack] with an event per change. 76.8%% of human charts carry more "
+             "than one tempo event, and for 190 of 307 of them a single tempo has "
+             "drifted past the 10 ms grid by the last event. Only with --detect-tempo; "
+             "costs one tempo search per 20 s of audio. OFF BY DEFAULT AND NOT YET "
+             "SHOWN TO HELP: on the multi-tempo songs it is for, the tempo estimate "
+             "itself is wrong more often than not (7 of 12 measured), and a map built "
+             "from wrong local tempi is no better than one wrong tempo."
+    )
+    parser.add_argument(
         "--guidance",
         type=float,
         default=0.0,
@@ -143,12 +156,22 @@ def main():
     elif args.detect_tempo:
         import librosa
         y, sr = librosa.load(args.audio_path, sr=22050, mono=True)
-        bpm, phase, score = detect_tempo(y, sr)
         onset = first_onset(y, sr)
-        bpm_events, anchor_tick, anchor_time = beat_aligned_tempo_events(
-            bpm, phase, onset, resolution)
+        if args.tempo_map:
+            segments = detect_tempo_map(y, sr)
+            bpm_events, anchor_tick, anchor_time = beat_aligned_tempo_map(
+                segments, onset, resolution)
+            bpm = segments[0][1]
+            print(f"Detected tempo map: {len(segments)} tempo(s) -- "
+                  + ", ".join(f"{value:.1f} BPM at {start:.0f}s"
+                              for start, value in segments))
+        else:
+            bpm, phase, score = detect_tempo(y, sr)
+            bpm_events, anchor_tick, anchor_time = beat_aligned_tempo_events(
+                bpm, phase, onset, resolution)
+            print(f"Detected tempo: {bpm:.3f} BPM (phase {phase:.3f}s, "
+                  f"score {score:.3f})")
         lead_bpm = bpm_events[0][1] / 1000.0
-        print(f"Detected tempo: {bpm:.3f} BPM (phase {phase:.3f}s, score {score:.3f})")
         print(f"First audio note at {onset:.3f}s; beat line at {anchor_time:.3f}s "
               f"(tick {anchor_tick}), lead-in {lead_bpm:.3f} BPM")
 

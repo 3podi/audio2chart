@@ -201,3 +201,125 @@ def beat_aligned_tempo_events(bpm, phase, onset, resolution):
         (beats * resolution, int(round(bpm * 1000))),
     ]
     return events, beats * resolution, anchor
+
+
+SEGMENT_SECONDS = 20.0
+"""How much audio each local tempo estimate sees.
+
+Long enough for the phase-locked search to be stable -- at 100 BPM that is 33 beats --
+and short enough to sit inside one section of a song. Shorter segments track a moving
+tempo more closely and estimate each one worse, and below about 10 s the search starts
+returning octave errors on sparse material.
+"""
+
+MERGE_BPM = 0.5
+"""Two neighbouring segments within this many BPM are the same tempo.
+
+detect_tempo rounds to a tenth, so anything under 0.5 is the estimator disagreeing with
+itself rather than the song changing. Human charts carry a median of four tempo events;
+emitting one per segment would produce dozens and claim precision the audio does not
+support.
+"""
+
+
+def detect_tempo_map(y, sr, segment_seconds=SEGMENT_SECONDS, bpm_range=DEFAULT_BPM_RANGE,
+                     hop_length=256):
+    """Local tempo over the whole song, as [(start_seconds, bpm), ...].
+
+    detect_tempo returns one number for the whole song, and measured against charts that
+    carry a single [SyncTrack] event it is very accurate -- median error 0.000 BPM, 34 of
+    36 within 1.0. But those charts are 23.2% of the corpus. The other 76.8% carry a
+    tempo map, median four events, and for 190 of 307 of them a flat map has drifted past
+    the 10 ms token grid by the last event. See measure_tempo_maps.py.
+
+    Robert reported the symptom from the other end, playing the generated iCarly chart:
+    "Leave it all to me is out of sync a small bit and the beat lines are out of place".
+    We detected 104.900 BPM where the chart's first event says 128.226 -- not an octave
+    error, just a song that does not have one tempo to find.
+
+    This runs the same phase-locked search over consecutive segments and merges
+    neighbours that agree, so a constant-tempo song still yields exactly one entry and
+    costs only the extra searches.
+    """
+    import numpy as np
+
+    duration = len(y) / float(sr)
+    if duration <= segment_seconds * 1.5:
+        bpm, _phase, _score = detect_tempo(y, sr, bpm_range, hop_length)
+        return [(0.0, bpm)]
+
+    segments = []
+    start = 0.0
+    while start < duration - segment_seconds / 2:
+        stop = min(start + segment_seconds, duration)
+        piece = y[int(start * sr):int(stop * sr)]
+        if piece.size < sr:                       # under a second is not measurable
+            break
+        bpm, _phase, _score = detect_tempo(piece, sr, bpm_range, hop_length)
+        segments.append((start, bpm))
+        start = stop
+
+    if not segments:
+        bpm, _phase, _score = detect_tempo(y, sr, bpm_range, hop_length)
+        return [(0.0, bpm)]
+
+    merged = [segments[0]]
+    for start, bpm in segments[1:]:
+        if abs(bpm - merged[-1][1]) <= MERGE_BPM:
+            continue
+        merged.append((start, bpm))
+    return merged
+
+
+def beat_aligned_tempo_map(segments, onset, resolution):
+    """Tick-exact tempo map from local tempi, keeping every event on a beat line.
+
+    Extends beat_aligned_tempo_events, and reduces to it exactly when the song has one
+    tempo -- the first segment is anchored by the same rule, so Robert's ordering still
+    holds: the first note lands on a beat line, that line carries the real tempo, and the
+    tick-0 event is whatever makes the lead-in last as long as the audio takes to get
+    there.
+
+    Every later tempo change is placed at a whole number of beats from the previous one.
+    That is what keeps ticks exact -- a change at an arbitrary time would put the
+    following notes on fractional ticks, and Robert's requirement is that they are not.
+    It also matches how charts are written: a tempo change happens on a beat.
+
+    The cost is that an event lands up to half a beat from where the audio changed. At
+    150 BPM that is 200 ms of the change arriving early or late, against the seconds of
+    accumulated drift a flat map produces; and a tempo estimated over a 20 s segment
+    cannot locate its own onset better than that anyway.
+
+    Returns (bpm_events, anchor_tick, anchor_seconds).
+    """
+    if not segments:
+        raise ValueError("no tempo segments")
+
+    first_bpm = segments[0][1]
+    events, anchor_tick, anchor = beat_aligned_tempo_events(
+        first_bpm, 0.0, onset, resolution)
+    if len(segments) == 1:
+        return events, anchor_tick, anchor
+
+    events = list(events)
+    tick = anchor_tick
+    when = anchor
+    current = first_bpm
+
+    for start, bpm in segments[1:]:
+        period = 60.0 / current
+        beats = int(round((start - when) / period))
+        if beats < 1:
+            # The segment boundary is less than half a beat past the previous event.
+            # Moving the tempo there would put two events on one tick; the later tempo
+            # wins, because it was measured over more of the music around that point.
+            if events and events[-1][0] == tick:
+                events[-1] = (tick, int(round(bpm * 1000)))
+                current = bpm
+            continue
+        tick += beats * resolution
+        when += beats * period
+        events.append((tick, int(round(bpm * 1000))))
+        current = bpm
+
+    return events, anchor_tick, anchor
