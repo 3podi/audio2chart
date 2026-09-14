@@ -47,6 +47,12 @@ trainer:
   # validation batch for every training batch and wrote a 2.42 GB checkpoint every 100
   # batches, which took a 2.79 it/s run down to 0.82 it/s with the GPU at 16%.
   # To validate every N optimizer steps, set this to N * accumulate_grad_batches.
+  #
+  # AND IT MUST ALSO BE <= THE BATCHES IN ONE EPOCH, or Lightning refuses to start. Those
+  # two rules pull against each other on a small corpus: 500 optimizer steps at
+  # accumulate 8 is 4000 batches, which is legal on the 13,338-item broad corpus and
+  # rejected on the 1,447-item tapping one. Getting the unit conversion right is not
+  # enough; check the result against the epoch.
   val_check_interval: null
   # Optimizer steps between plain last.ckpt saves, independent of validation. 0 disables.
   checkpoint_every_n_steps: 0
