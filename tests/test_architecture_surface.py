@@ -37,7 +37,7 @@ class ArchitectureSurfaceTests(unittest.TestCase):
     def test_only_supported_training_models_remain(self):
         self.assertEqual(
             class_names(ROOT / "modules" / "models.py"),
-            {"Encodec", "ResnetBlock2d", "SEANetEncoder2d",
+            {"Encodec", "MERT", "ResnetBlock2d", "SEANetEncoder2d",
              "TransformerEncoder", "TransformerDecoderOnly"},
         )
 
