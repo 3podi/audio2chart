@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
                              "It does not reliably improve how well the chart follows the "
                              "music; that claim did not survive a wider sample.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--force", action="store_true",
+                        help="Rebuild song folders that already exist. Staleness is "
+                             "detected on its own when the audio or the model is newer "
+                             "than the chart; this is for when neither changed but the "
+                             "generation settings did.")
     parser.add_argument("--max-parallel-chunks", type=int, default=2,
                         help="Lower than generate.py's default of 4, because guidance "
                              "doubles the KV cache and these are whole songs rather than "
@@ -70,6 +75,26 @@ def read_ini(folder: Path) -> dict[str, str]:
     return fields
 
 
+def stale_inputs(generated: Path, audio_stamp: float | None,
+                 model_stamp: float | None) -> list[str]:
+    """Which of a built chart's inputs have changed since it was built.
+
+    Skipping folders that already exist is worth keeping -- a song takes about twelve
+    minutes with guidance on, and this gets interrupted often -- but skipping on
+    existence alone makes a stale folder permanent, and a stale folder is
+    indistinguishable from a fresh one once it is sitting in the library.
+
+    That is not hypothetical. Robert played the Diary of Jane playtest and reported it
+    sounding like the guitar stem alone, with drums only in the intro. The song ships as
+    seven separate stems; the manifest was repointed at their mix six hours *after* that
+    folder was built, so the fix was in the data and could never reach the chart. No
+    rebuild would have picked it up.
+    """
+    built_at = generated.stat().st_mtime
+    return [label for label, when in (("audio", audio_stamp), ("model", model_stamp))
+            if when is not None and when > built_at]
+
+
 def safe_name(text: str) -> str:
     keep = "".join(c if c.isalnum() or c in " -_&'" else "_" for c in text)
     return keep.strip() or "untitled"
@@ -81,6 +106,11 @@ def main() -> None:
     random.Random(args.seed).shuffle(entries)
     args.out.mkdir(parents=True, exist_ok=True)
 
+    # Newest file in the model directory: an exported model is a config and a weights
+    # blob written together, so either one moving means a different model.
+    model_stamp = max((path.stat().st_mtime for path in args.model.rglob("*")
+                       if path.is_file()), default=None)
+
     built = 0
     for entry in entries:
         if built >= args.songs:
@@ -89,6 +119,7 @@ def main() -> None:
         audio = Path(entry["audio_path"])
         if not audio.is_file():
             continue
+        audio_stamp = audio.stat().st_mtime
 
         fields = read_ini(source)
         name = fields.get("name", source.name)
@@ -96,13 +127,13 @@ def main() -> None:
         folder = args.out / safe_name(f"{artist} - {name} [AI]")
         generated = folder / "notes.chart"
 
-        # Skip what is already built. A song takes about twelve minutes with guidance
-        # on, so rebuilding three to add one is most of an hour for nothing, and this
-        # gets interrupted often.
-        if generated.is_file():
-            print(f"\n=== {artist} - {name}  (already built, skipping)")
-            built += 1
-            continue
+        if generated.is_file() and not args.force:
+            newer = stale_inputs(generated, audio_stamp, model_stamp)
+            if not newer:
+                print(f"\n=== {artist} - {name}  (already built, skipping)")
+                built += 1
+                continue
+            print(f"\n=== {artist} - {name}  ({' and '.join(newer)} changed, rebuilding)")
 
         folder.mkdir(parents=True, exist_ok=True)
         print(f"\n=== {artist} - {name}")
