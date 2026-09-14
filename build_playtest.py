@@ -46,6 +46,13 @@ def parse_args() -> argparse.Namespace:
                              "It does not reliably improve how well the chart follows the "
                              "music; that claim did not survive a wider sample.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--max-parallel-chunks", type=int, default=2,
+                        help="Lower than generate.py's default of 4, because guidance "
+                             "doubles the KV cache and these are whole songs rather than "
+                             "clips. At 4 with guidance on, a four-minute song reached "
+                             "7806 MiB of 8192 and the rate collapsed from ~2 it/s to "
+                             "282 s/it -- WDDM spills VRAM to host RAM instead of raising, "
+                             "so it never surfaces as an out-of-memory.")
     return parser.parse_args()
 
 
@@ -87,16 +94,25 @@ def main() -> None:
         name = fields.get("name", source.name)
         artist = fields.get("artist", "unknown")
         folder = args.out / safe_name(f"{artist} - {name} [AI]")
-        folder.mkdir(parents=True, exist_ok=True)
-
-        print(f"\n=== {artist} - {name}")
         generated = folder / "notes.chart"
+
+        # Skip what is already built. A song takes about twelve minutes with guidance
+        # on, so rebuilding three to add one is most of an hour for nothing, and this
+        # gets interrupted often.
+        if generated.is_file():
+            print(f"\n=== {artist} - {name}  (already built, skipping)")
+            built += 1
+            continue
+
+        folder.mkdir(parents=True, exist_ok=True)
+        print(f"\n=== {artist} - {name}")
         result = subprocess.run([
             sys.executable, str(ROOT / "generate.py"), str(audio),
             "--model_name", str(args.model),
             "--detect-tempo", "--snap", "auto",
             "--temperature", str(args.temperature),
             "--guidance", str(args.guidance),
+            "--max-parallel-chunks", str(args.max_parallel_chunks),
             "--name", name, "--artist", artist,
             "--charter", "audio2chart (AI)",
             "--output", str(folder),

@@ -43,6 +43,104 @@ which is exactly the class of error that is invisible until a model trains on it
 """
 
 
+STEM_PREFIXES = ("guitar", "rhythm", "bass", "vocals", "drums", "keys", "song")
+"""Filenames Clone Hero mixes together when a song ships split.
+
+`song.*` is in here deliberately: in a multi-stem folder it is not the whole song, it is
+the leftover backing track, and it belongs in the sum like any other stem.
+"""
+
+STEM_CACHE = Path(r"G:\a2c_data\mixed_audio")
+
+
+def stem_files(directory: Path) -> list[Path]:
+    """The separate stems in a folder, or [] if it is an ordinary single-audio song."""
+    try:
+        entries = [p for p in directory.iterdir()
+                   if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+                   and not p.stem.lower().startswith(AUDIO_EXCLUDED_STEMS)]
+    except OSError:
+        return []
+    stems = [p for p in entries
+             if any(p.stem.lower().startswith(prefix) for prefix in STEM_PREFIXES)]
+    # One file called song.* is just a song. Two or more named parts is a split.
+    named = {p.stem.lower().rstrip("0123456789_") for p in stems}
+    return sorted(stems) if len(named) > 1 else []
+
+
+def mixed_audio_for(directory: Path) -> Path | None:
+    """Sum a folder's stems into one cached file, the way Clone Hero plays them.
+
+    Cached under a hash of the input paths and sizes, so a folder is mixed once and a
+    changed folder is mixed again. Returns None if ffmpeg is unavailable or fails, and
+    callers fall back to the ordered candidates.
+    """
+    stems = stem_files(directory)
+    if len(stems) < 2:
+        return None
+
+    import hashlib
+    import subprocess
+
+    signature = hashlib.sha1(
+        "|".join(f"{p.name}:{p.stat().st_size}" for p in stems).encode()
+    ).hexdigest()[:16]
+    STEM_CACHE.mkdir(parents=True, exist_ok=True)
+    destination = STEM_CACHE / f"{directory.name[:60]}_{signature}.ogg"
+    if destination.is_file():
+        return destination
+
+    # normalize=0 keeps each stem at its authored level -- amix's default divides by the
+    # input count, which buries a guitar that shares a folder with three drum stems.
+    #
+    # But a plain sum overshoots: seven stems of one song peaked at 2.146, and anything
+    # over 1.0 clips. A limiter was tried and was not enough either -- capping at 0.95
+    # still decoded at 1.149, because Vorbis overshoots on decode. So measure the sum's
+    # real peak and apply the exact gain, which needs two passes and is worth it for a
+    # file that is written once and cached.
+    inputs: list[str] = []
+    for stem in stems:
+        inputs += ["-i", str(stem)]
+    mix = f"amix=inputs={len(stems)}:duration=longest:normalize=0"
+
+    # astats, not volumedetect. volumedetect converts to 16-bit integer before measuring,
+    # so it clamps: on a sum that genuinely peaked near 2.0 it reported 0.0 dB, the gain
+    # computed from it did nothing, and the mix still clipped. Vorbis stores float and
+    # happily holds samples above 1.0, so the measurement has to be a float one.
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", *inputs, "-filter_complex",
+             f"{mix},astats=measure_overall=Peak_level:measure_perchannel=none",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    peak_db = None
+    for line in probe.stderr.splitlines():
+        if "Peak level dB:" in line:
+            try:
+                peak_db = float(line.split("Peak level dB:")[1].strip().split()[0])
+            except (IndexError, ValueError):
+                peak_db = None
+    if peak_db is None:
+        return None
+
+    # Land at -1 dBFS, leaving room for the decoder's overshoot.
+    gain_db = -1.0 - peak_db
+    command = ["ffmpeg", "-y", "-loglevel", "error", *inputs,
+               "-filter_complex", f"{mix},volume={gain_db:.2f}dB",
+               "-c:a", "libvorbis", "-q:a", "6", str(destination)]
+    try:
+        if subprocess.run(command, timeout=600).returncode != 0:
+            destination.unlink(missing_ok=True)
+            return None
+    except (OSError, subprocess.SubprocessError):
+        destination.unlink(missing_ok=True)
+        return None
+    return destination if destination.is_file() else None
+
+
 def find_audio_for(directory: Path) -> Path | None:
     """The audio file for a chart folder, or None.
 
@@ -50,10 +148,21 @@ def find_audio_for(directory: Path) -> Path | None:
     a video. The fallback recovers folders that name their audio after the song itself
     (three in this library) without which those charts are simply dropped.
 
-    Stem-split songs (bass/drums/vocals/rhythm alongside guitar) are left to the ordered
-    candidates above: guitar.* wins, so the model sees isolated guitar for those. Only 10
-    folders here are affected, but it is worth knowing the training signal is not uniform.
+    CORRECTION, and it ran the wrong way round. This used to say that for stem-split
+    songs "guitar.* wins, so the model sees isolated guitar", and that only 10 folders
+    were affected. Both were wrong. `song.*` comes first in AUDIO_CANDIDATES, so `song.*`
+    won -- and in a multi-stem folder `song.*` is the *backing track*, everything except
+    the instruments supplied separately. The model was therefore trained on the mix with
+    the guitar removed, and asked to chart a part it could not hear. 73 songs in the
+    tapping split, 4%, not 10.
+
+    Clone Hero plays every stem together, so the song is their sum. `mixed_audio_for`
+    builds that sum once and caches it, and it is what this returns for such folders.
     """
+    mixed = mixed_audio_for(directory)
+    if mixed is not None:
+        return mixed
+
     for name in AUDIO_CANDIDATES:
         candidate = directory / name
         if candidate.is_file():
