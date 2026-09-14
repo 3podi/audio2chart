@@ -602,6 +602,15 @@ class MERT(nn.Module):
         else:
             self.layer_weights = None
 
+    def trainable_when_frozen(self):
+        """Parameters that must keep learning even with freeze_encoder set.
+
+        The 95M backbone is pretrained and stays frozen. The layer blend is not: it is
+        13 scalars this class adds, and freezing them makes the "learned" weighting a
+        fixed uniform average.
+        """
+        return [] if self.layer_weights is None else [self.layer_weights]
+
     def forward(self, input_values):
         # The pipeline carries audio as [B, 1, T]; HuBERT wants [B, T].
         if input_values.dim() == 3:

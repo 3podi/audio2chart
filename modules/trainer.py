@@ -424,8 +424,18 @@ class WaveformTransformerDiscrete(L.LightningModule):
         self.freeze_encoder=cfg_model.freeze_encoder
         if self.freeze_encoder:
             self.audio_encoder.eval()
+            # An encoder may own parameters that are not part of the pretrained weights
+            # and should still learn. MERT's blend over its 13 hidden states is 13
+            # scalars added here, not something the checkpoint shipped; freezing them
+            # leaves the blend a fixed uniform average and the optimizer never sees it,
+            # because configure_optimizers only takes requires_grad parameters.
+            #
+            # That is exactly what happened: a 1000-step MERT run finished with its
+            # weights still at 0.0769 each, to four decimal places.
+            spared = {id(p) for p in
+                      getattr(self.audio_encoder, "trainable_when_frozen", list)()}
             for param in self.audio_encoder.parameters():
-                param.requires_grad = False
+                param.requires_grad = id(param) in spared
         
         # Optimizer
         self.cfg_optimizer = cfg_optimizer
@@ -782,8 +792,14 @@ class WaveformTransformerDiscrete(L.LightningModule):
         ]
 
         # ---- Add encoder with its own LR ----
-        if not self.freeze_encoder:
-            enc_params = [p for p in self.audio_encoder.parameters() if p.requires_grad]
+        #
+        # Gated on what is actually trainable rather than on freeze_encoder, because a
+        # frozen encoder can still own parameters that must learn -- MERT's blend over
+        # its 13 hidden states is 13 scalars this project adds, not pretrained weights.
+        # The groups above exclude anything named audio_encoder, so skipping this branch
+        # left those parameters in no group at all: requires_grad True and never stepped.
+        enc_params = [p for p in self.audio_encoder.parameters() if p.requires_grad]
+        if enc_params:
             optim_groups.append({
                 'params': enc_params,
                 'weight_decay': weight_decay,
