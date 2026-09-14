@@ -4,7 +4,8 @@ import sys
 import torch
 
 from inference.engine import Charter
-from chart.time_conversion import choose_snap, convert_notes_to_ticks
+from chart.time_conversion import (choose_snap, convert_notes_to_ticks,
+                                   snap_passages)
 from chart.tokenizer import SimpleTokenizerGuitar
 from chart.chart_writer import fill_expert_single
 from chart.tempo import (parse_sync_track, detect_tempo, detect_tempo_map,
@@ -225,22 +226,32 @@ def main():
     # the notes would land on. Snapping is only safe with a trustworthy tempo: exact
     # from --sync-from, estimated from --detect-tempo, asserted by --bpm.
     snap = args.snap
+    snap_map = None
     if isinstance(snap, str):
         if snap.lower() == "auto":
             unsnapped = convert_notes_to_ticks(
                 seqs, time_list, fixed_bpm=args.bpm, resolution=resolution,
                 bpm_events=bpm_events, snap=0, pad_token_id=tokenizer.pad_id,
                 tokenizer=tokenizer)
-            snap = choose_snap([item[0] for item in unsnapped], resolution)
-            print(f"Snapping to 1/{snap} notes"
-                  if snap else "No subdivision fits; leaving notes unsnapped")
+            raw = [item[0] for item in unsnapped]
+            # Per passage, not per chart. Asking one subdivision to fit a whole chart
+            # fails on the first dense run and then snaps nothing at all: a generated
+            # Diary of Jane came out with 41 of 4,495 notes on a 1/16 and 11 on a beat
+            # line, which Robert read in Moonscraper as notes "in a completely weird
+            # step".
+            snap_map = snap_passages(raw, resolution)
+            landed = sum(1 for tick in set(raw)
+                         if snap_map[tick] % (resolution // 4) == 0)
+            print(f"Snapping per passage: {landed}/{len(set(raw))} distinct positions "
+                  f"land on a 1/16 subdivision")
+            snap = 0
         else:
             snap = int(snap)
 
     ticked_notes = convert_notes_to_ticks(seqs, time_list, fixed_bpm=args.bpm,
                                           resolution=resolution, bpm_events=bpm_events,
                                           snap=snap, pad_token_id=tokenizer.pad_id,
-                                          tokenizer=tokenizer)
+                                          tokenizer=tokenizer, snap_map=snap_map)
     decoded_full = tokenizer.decode(ticked_notes, resolution=resolution)
 
     # Prepare metadata

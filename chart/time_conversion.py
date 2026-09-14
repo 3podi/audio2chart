@@ -159,7 +159,63 @@ def seconds_to_tick(time_sec, bmp_segments, resolution, segment_times=None):
 # Subdivisions a charter actually writes, coarsest first. Triplet divisions are in
 # here because 1/12 and 1/24 are ordinary in this music and a power-of-two-only list
 # would snap them onto the wrong grid.
+#
+# Deliberately not extended past 1/96 to give dense passages "somewhere to land". Tried
+# that: adding 1/128 and 1/192 means a run spaced 10 ticks apart snaps onto a 4-tick
+# grid as 0, 12, 20, 28, 40 -- it invents unevenness the model did not emit, which is
+# worse than leaving it alone. test_tick_exactness already documented that case. A
+# passage no subdivision fits is left unsnapped; the fix for it is per-passage
+# selection below, not a finer ruler.
 SNAP_CHOICES = (4, 8, 12, 16, 24, 32, 48, 64, 96)
+
+REST_BEATS = 1.0
+"""A gap this long ends a passage, for the purpose of picking a snap grid.
+
+Patterns live inside runs; a rest between them means the next run is free to be written
+on a different subdivision, exactly as a charter would.
+"""
+
+
+def snap_passages(ticks, resolution, choices=SNAP_CHOICES, rest_beats=REST_BEATS):
+    """Snapped position for every tick, choosing a subdivision per passage.
+
+    choose_snap asks one question of a whole chart -- "is there a subdivision that keeps
+    every note distinct?" -- and answers "no" as soon as any passage is denser than the
+    finest choice. On a generated Diary of Jane it returned 0, so nothing was snapped at
+    all: 11 of 4,495 notes landed on a beat line and 41 on a 1/16. Robert, reading it in
+    Moonscraper: "at tick 65286 the yellow note is supposed to be at 65280 ... a lot of
+    notes are placed in a completely weird step."
+
+    One dense run should not cost the other three minutes their grid. This splits the
+    chart at rests and picks the coarsest subdivision that works for each passage, so
+    the ordinary parts land on 1/16 or 1/32 and only the passage that genuinely cannot
+    be represented is left alone.
+
+    Returns {tick: snapped_tick}, identity for anything that cannot be snapped.
+    """
+    positions = sorted(set(int(t) for t in ticks))
+    if len(positions) < 2:
+        return {t: t for t in positions}
+
+    rest = max(1, int(round(resolution * rest_beats)))
+    passages, current = [], [positions[0]]
+    for previous, tick in zip(positions, positions[1:]):
+        if tick - previous > rest:
+            passages.append(current)
+            current = []
+        current.append(tick)
+    passages.append(current)
+
+    mapping = {}
+    for passage in passages:
+        divisions = choose_snap(passage, resolution, choices)
+        if not divisions:
+            mapping.update({t: t for t in passage})
+            continue
+        step = resolution * 4 / divisions
+        for tick in passage:
+            mapping[tick] = int(round(round(tick / step) * step))
+    return mapping
 
 
 def choose_snap(ticks, resolution, choices=SNAP_CHOICES):
@@ -189,7 +245,8 @@ def choose_snap(ticks, resolution, choices=SNAP_CHOICES):
 
 
 def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480,
-                           bpm_events=None, snap=0, pad_token_id=34, tokenizer=None):
+                           bpm_events=None, snap=0, pad_token_id=34, tokenizer=None,
+                           snap_map=None):
     """
     Place decoded tokens on the tick grid.
 
@@ -226,7 +283,15 @@ def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480
         if tokenizer is not None and not tokenizer.is_note_token(note):
             continue  # <bos>/<eos> or out of range
         tick = to_tick(t)
-        if grid:
+        if snap_map is not None:
+            # A per-passage grid, from snap_passages. One subdivision for the whole
+            # chart fails as soon as any passage is denser than the finest choice, and
+            # failing means snapping nothing at all.
+            tick = snap_map.get(tick, tick)
+            if (tick, note) in seen:
+                continue
+            seen.add((tick, note))
+        elif grid:
             tick = int(round(tick / grid)) * grid
             # snapping can collapse neighbouring tokens onto the same lane
             if (tick, note) in seen:
