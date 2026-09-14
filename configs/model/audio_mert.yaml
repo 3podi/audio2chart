@@ -29,6 +29,19 @@ pad_class_weight: 0.1
 # Unlike trainer.resume_path this does not restore the step count, so a
 # checkpoint taken past max_steps can still seed a new run.
 init_from: null
+
+# The released Encodec checkpoint cannot fully match a MERT model, and the mismatch is
+# exactly two things, both verified before this was enabled:
+#
+#   missing   transformer.audio_projection.weight  -- the Linear(768 -> 1024) that reads
+#             MERT features. No Encodec checkpoint can contain it.
+#   unused    transformer.codes_embedding.0..3     -- the four codebook embeddings, which
+#             a feature encoder does not have.
+#
+# Everything else transfers: all 16 decoder layers, cross-attention, token embedding and
+# output projection. Scoped to this config rather than passed on the command line, so it
+# cannot quietly excuse a genuinely wrong architecture in an Encodec run.
+pretrained_allow_partial: true
 # No processor. The dataloader builds one with AutoProcessor.from_pretrained(
 # model.encoder.checkpoint), which for MERT resolves through AutoConfig and demands
 # trust_remote_code -- the thing modules.models.MERT exists to avoid. It also would not
