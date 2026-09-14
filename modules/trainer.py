@@ -1,3 +1,4 @@
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -381,6 +382,12 @@ class WaveformTransformerDiscrete(L.LightningModule):
         # Off by default: it changes what the model is trained on, so it is a decision
         # for a run rather than something to inherit silently.
         self.input_noise = float(OmegaConf.select(cfg_model, "input_noise", default=0.0))
+        # Mean length of a corrupted run. 1.0 is the original behaviour, where every
+        # token is corrupted independently; above 1.0 the same total corruption is
+        # delivered in contiguous bursts instead. See _corrupt_inputs for why that
+        # matters more than the rate does.
+        self.input_noise_burst = float(
+            OmegaConf.select(cfg_model, "input_noise_burst", default=1.0))
         # Note tokens occupy [0, n_note_tokens); bos/eos/pad sit above them and must
         # never be drawn as noise -- an injected eos would teach the model to stop.
         self.n_note_tokens = min(pad_token_id, eos_token_id)
@@ -470,7 +477,7 @@ class WaveformTransformerDiscrete(L.LightningModule):
         )
 
     def _corrupt_inputs(self, input_tokens):
-        """Randomly replace input tokens, so the model learns to recover from error.
+        """Randomly replace training input tokens, so the model learns to recover.
 
         Teacher forcing only ever shows the model a correct history, and free running
         it then drifts: measured over one 30s chunk, the generated tap rate climbs
@@ -481,8 +488,40 @@ class WaveformTransformerDiscrete(L.LightningModule):
         wrong history and has no idea how to continue from one.
 
         Scheduled sampling is the usual answer and costs a second forward pass per
-        step. Corrupting a small fraction of inputs approximates it for free: the
-        model sees histories containing mistakes and learns not to compound them.
+        step. Corrupting a fraction of inputs approximates it for free.
+
+        WHAT THE RATE ALONE DOES NOT FIX. Corrupting tokens independently teaches
+        recovery from a typo, and the failure that survives it is a rut. A generated
+        LESBIAN VAMPIRE KILLERS opened with 46 consecutive five-fret tap chords, one
+        every 30 ms, which Robert reported as impossible to play. Probed directly with
+        chord_response.py, the model recovers from a short run of them and cannot
+        recover from a long one:
+
+            history          P(same again)   5-note mass   (corpus: 0.223%)
+            clean                   0.0000        0.000%
+            2 GRYBO taps            0.0000        0.001%
+            8 GRYBO taps            0.0164        9.770%
+            16 GRYBO taps           0.1292       41.760%
+
+        That boundary is exactly where the training signal stops. At input_noise 0.08,
+        i.i.d., the chance of eight consecutive corrupted positions is 0.08**8, about
+        1.7e-9; across the 72 million token positions of a 6000-step run the expected
+        number of runs of sixteen is 2e-10. The model was never once shown a history
+        it had been wrong in for long enough to matter, so "get out of a rut" is not
+        something it could have learned, at any rate.
+
+        Tracing a real generation confirms entry is not a sampling accident either:
+        the first two-note chord arrived at rank 19 with probability 0.0065 -- a tail
+        draw -- and twelve steps later a five-fret chord was the model's rank-1 token
+        at probability 0.184. One unlikely token puts the history off-distribution and
+        the predictions there are junk. No temperature or top_k setting fixes a rank-1
+        prediction; this is the same shape as the pad collapse, and the same place to
+        fix it.
+
+        So corruption is delivered in bursts of a single repeated token, which is the
+        pathology verbatim, while `input_noise` still sets the overall fraction of
+        corrupted positions. `input_noise_burst` is the mean burst length; 1.0 restores
+        the original independent behaviour exactly.
 
         Targets are untouched, so the model is still asked for the right answer -- the
         point is to make it right despite a damaged history, not to teach it the
@@ -491,13 +530,54 @@ class WaveformTransformerDiscrete(L.LightningModule):
         """
         if not self.input_noise or not self.training:
             return input_tokens
+
         keep = input_tokens != self.pad_token_id
-        draw = torch.rand_like(input_tokens, dtype=torch.float) < self.input_noise
-        corrupt = keep & draw
+        burst = max(1.0, self.input_noise_burst)
+
+        if burst <= 1.0:
+            corrupt = keep & (torch.rand_like(input_tokens, dtype=torch.float)
+                              < self.input_noise)
+            if not corrupt.any():
+                return input_tokens
+            noise = torch.randint_like(input_tokens, 0, self.n_note_tokens)
+            return torch.where(corrupt, noise, input_tokens)
+
+        # A burst starts rarely enough that the expected fraction of corrupted
+        # positions is still `input_noise`: each start covers `burst` positions on
+        # average, so starts happen at input_noise / burst.
+        start_rate = self.input_noise / burst
+        starts = keep & (torch.rand_like(input_tokens, dtype=torch.float) < start_rate)
+        if not starts.any():
+            return input_tokens
+
+        # Geometric lengths, so most bursts are short and a few are long -- the long
+        # ones are the whole point, and a fixed length would never produce the range
+        # the probe walks. Mean length is `burst` for success probability 1 / burst.
+        rows, width = input_tokens.shape
+        device = input_tokens.device
+        uniform = torch.rand(rows, width, device=device).clamp_min(torch.finfo(
+            torch.float32).tiny)
+        lengths = 1 + torch.floor(
+            torch.log(uniform) / math.log(1.0 - 1.0 / burst)).long()
+
+        # How far each burst reaches, then a running maximum: a position is corrupt if
+        # some earlier start still covers it. cummax also reports *which* start that
+        # was, which is how a burst repeats one token instead of drawing a new one
+        # every step -- the 46-chord run is one token held, not 46 random mistakes.
+        #
+        # Done this way rather than by walking the sequence: the obvious loop is one
+        # tensor op per position, 1500 of them per training step.
+        index = torch.arange(width, device=device).expand(rows, width)
+        reach = torch.where(starts, index + lengths, torch.full_like(index, -1))
+        furthest, origin = torch.cummax(reach, dim=1)
+        corrupt = (furthest > index) & keep
         if not corrupt.any():
             return input_tokens
-        noise = torch.randint_like(input_tokens, 0, self.n_note_tokens)
-        return torch.where(corrupt, noise, input_tokens)
+
+        noise = torch.randint(0, self.n_note_tokens, (rows, width),
+                              device=device, dtype=input_tokens.dtype)
+        repeated = torch.gather(noise, 1, origin.clamp_min(0))
+        return torch.where(corrupt, repeated, input_tokens)
 
     @staticmethod
     def _flatten_encodec_frames(audio_codes):

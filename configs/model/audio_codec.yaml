@@ -8,6 +8,11 @@ freeze_encoder: true
 # Declared here so it can be overridden normally -- reading it with a default is not
 # enough, Hydra refuses `model.input_noise=X` for a key the config does not define.
 input_noise: 0.0
+# Mean length of a corrupted run. 1.0 corrupts each token independently, which
+# teaches recovery from a typo; the failure that survives it is a rut, and at
+# input_noise 0.08 a run of eight wrong tokens has probability 0.08**8. Above 1.0
+# the same total corruption arrives in contiguous bursts of one repeated token.
+input_noise_burst: 1.0
 # Weight on the pad token in the cross-entropy loss.
 #
 # Pad is ~86% of targets. At 0.1 it contributes 0.086 of the loss against 0.14 from real
