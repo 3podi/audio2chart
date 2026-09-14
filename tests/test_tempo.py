@@ -49,12 +49,34 @@ class TempoTest(unittest.TestCase):
 
 
     def test_the_grid_stays_locked_to_the_tracked_beat(self):
-        """The anchor is the nearest tracked beat, not the raw onset -- a note played a
-        little ahead of the beat must not drag the whole grid with it."""
+        """The anchor is now the first onset itself, and this test used to assert otherwise.
+
+        It required the anchor to be the nearest *tracked beat*, on the reasoning that a
+        note played slightly ahead of the beat should not drag the whole grid with it.
+        That reasoning is sound and the risk is real -- but it only pays off if the tracked
+        beat is where the music's beat actually is, and measured against 24 charts' own
+        beat grids the phase search is 51 ms out at the median and 152 ms at p90.
+
+        Anchoring on the onset instead measures better on the same ground truth: 42.7 ms
+        median, 96 ms p90, better on 16 of 24 songs. It also makes Robert's rule -- the
+        first note lands on a beat line -- true by construction rather than true as far as
+        a search happens to be right.
+
+        The tradeoff this test was guarding is still real. A first note played ahead of the
+        beat now shifts the grid by that much, and nothing here detects it. It is accepted
+        because the alternative measured worse, not because the concern was wrong.
+        """
+        bpm = 120.0
+        _, _, anchor = beat_aligned_tempo_events(bpm, 0.10, 2.04, RESOLUTION)
+        assert abs(anchor - 2.04) < 1e-9, "the anchor is the onset, not a snapped beat"
+
+    def test_the_grid_falls_back_when_there_is_no_onset(self):
+        """An onset at exactly zero means nothing was detected, so the search stands in."""
         bpm, phase, period = 120.0, 0.10, 0.5
-        _, _, anchor = beat_aligned_tempo_events(bpm, phase, 2.04, RESOLUTION)
-        assert abs((anchor - phase) % period) < 1e-9
-        assert abs(anchor - 2.10) < 1e-9
+        events, anchor_tick, anchor = beat_aligned_tempo_events(bpm, phase, 0.0, RESOLUTION)
+        # 0.0 lands inside the first half-beat, so this is the immediate-start path.
+        assert anchor_tick == 0
+        assert events == [(0, 120000)]
 
 
     def test_song_tempo_holds_after_the_anchor(self):
