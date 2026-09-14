@@ -49,19 +49,28 @@ def parse_args():
     parser.add_argument("--config-name", default="audio")
     parser.add_argument("--batches", type=int, default=20)
     parser.add_argument("--songs", type=int, default=40)
+    parser.add_argument("--split-folder", default=None,
+                        help="Evaluate on this split's val.json. Without it the config "
+                             "leaves split_folder null, which makes load_data_splits "
+                             "build a fresh 80/20 split of the whole library -- a "
+                             "different val set from the one a run trained against, and "
+                             "one containing songs the model has seen. Two checkpoints "
+                             "can only be compared on identical held-out songs.")
     parser.add_argument("--trust", action="store_true",
                         help="Unpickle the checkpoint with weights_only=False. Only for "
                              "a checkpoint you produced yourself, never a downloaded one.")
     return parser.parse_args()
 
 
-def load_config(config_dir, config_name):
+def load_config(config_dir, config_name, split_folder=None):
     with initialize_config_dir(version_base=None, config_dir=config_dir):
         cfg = compose(config_name=config_name)
     with open_dict(cfg):
         cfg.loader.num_workers = 0
         cfg.loader.val_batch_size = MIN_BATCH
         cfg.loader.val_num_pieces = MIN_BATCH
+        if split_folder:
+            cfg.data.split_folder = split_folder
     return cfg
 
 
@@ -116,7 +125,9 @@ def main():
     from modules.pretrained import load_pretrained_transformer
     from modules.trainer import WaveformTransformerDiscrete
 
-    cfg = load_config(args.config_dir or os.path.join(root, "configs"), args.config_name)
+    cfg = load_config(args.config_dir or os.path.join(root, "configs"),
+                      args.config_name, args.split_folder)
+    print(f"val set: {cfg.data.split_folder or '(fresh split of the whole library)'}")
     tokenizer = SimpleTokenizerGuitar()
     train_files, val_files = load_data_splits(cfg)
     random.Random(0).shuffle(val_files)
