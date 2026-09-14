@@ -132,13 +132,29 @@ def main() -> None:
     solid = [r for r in rows if r[1] >= args.min_occurrences]
     if solid:
         medians = [r[0] for r in solid]
-        within_two = sum(1 for m in medians if m <= 2.0)
         print(f"\n  {len(solid)} patterns seen at least {args.min_occurrences} times")
         print(f"  median span across them: {statistics.median(medians):.2f} beats")
-        print(f"  within two beats: {within_two}/{len(solid)}"
-              f"  ({100 * within_two / len(solid):.0f}%)")
+
+        # Reported on both statistics, because they disagree and the disagreement is
+        # the answer. A first version counted only medians, said "within two beats:
+        # 69/69 (100%)", and printed advice to size windows by p90 immediately below --
+        # where six of those same patterns run past two beats, one to 7.17. Quoting the
+        # median alone would have confirmed the 1-2 beat estimate and hidden the cases
+        # a search window has to be built for.
+        by_median = sum(1 for m in medians if m <= 2.0)
+        p90s = [(sorted(values)[int(0.90 * len(values))], name)
+                for _median, _count, name, values in solid]
+        by_p90 = sum(1 for value, _name in p90s if value <= 2.0)
+        print(f"  within two beats, typical occurrence: {by_median}/{len(solid)}"
+              f"  ({100 * by_median / len(solid):.0f}%)")
+        print(f"  within two beats, 9 in 10 occurrences: {by_p90}/{len(solid)}"
+              f"  ({100 * by_p90 / len(solid):.0f}%)")
+
         widest = max(solid, key=lambda r: r[0])
-        print(f"  widest: {widest[2]} at {widest[0]:.2f} beats")
+        print(f"  widest median: {widest[2]} at {widest[0]:.2f} beats")
+        for value, name in sorted(p90s, reverse=True)[:5]:
+            if value > 2.0:
+                print(f"    past two beats at p90: {name} at {value:.2f}")
         print("\n  A window sized for the median will truncate everything above it. The p90")
         print("  column is the one to size a search window against, per pattern.")
 
