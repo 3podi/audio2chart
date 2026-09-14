@@ -29,7 +29,17 @@ pad_class_weight: 0.1
 # Unlike trainer.resume_path this does not restore the step count, so a
 # checkpoint taken past max_steps can still seed a new run.
 init_from: null
-use_processor: true
+# No processor. The dataloader builds one with AutoProcessor.from_pretrained(
+# model.encoder.checkpoint), which for MERT resolves through AutoConfig and demands
+# trust_remote_code -- the thing modules.models.MERT exists to avoid. It also would not
+# fit: that call site passes `raw_audio=` and reads back a `padding_mask`, which is
+# EncodecFeatureExtractor's API, not Wav2Vec2FeatureExtractor's.
+#
+# Nothing is lost. MERT's preprocessor only normalises the waveform to zero mean and unit
+# variance, and modules.models.MERT.forward does that itself; with no processor the
+# collate passes raw audio through, which is what it wants. The features branch of
+# _encode_audio ignores the padding mask anyway.
+use_processor: false
 sample_rate: 24000
 
 # Music-understanding features instead of a compression codec.
