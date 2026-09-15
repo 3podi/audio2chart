@@ -325,6 +325,7 @@ class TransformerDecoderAudioConditioned(nn.Module):
             conditional=False, 
             use_flash=False,
             codebook_size=1024,
+            aligned_audio=False,
             grid_ms=20,
             window_seconds=30.0,
             **kwargs,
@@ -351,6 +352,13 @@ class TransformerDecoderAudioConditioned(nn.Module):
         # positions into token units while decoding with a cache, where the query is a
         # single step and cannot supply the ratio itself.
         self.token_length = int(round(float(window_seconds) * 1000.0 / float(grid_ms)))
+
+        # Time-aligned audio path, matching modules.training_transformer. Off by default
+        # because it adds parameters.
+        self.aligned_audio = bool(aligned_audio)
+        if self.aligned_audio:
+            self.align_projection = nn.Linear(d_model, d_model, bias=False)
+            self.align_gate = nn.Parameter(torch.zeros(1))
 
         self.layers = nn.ModuleList()
         for _ in range(n_layers):
@@ -417,6 +425,18 @@ class TransformerDecoderAudioConditioned(nn.Module):
         #input_audio = self.norm_audio(input_audio)
         #if self.compression:
         #    audio_emb = self.audio_compression(input_audio)
+
+        # The audio at this step's own timestamp, added directly. Resampled to the full
+        # window and then indexed, so a cached single-step query gets the same value a
+        # full forward would put at that position -- indexing after resampling rather
+        # than resampling a slice is what keeps the two paths identical.
+        if self.aligned_audio:
+            aligned = F.interpolate(
+                audio_emb.transpose(1, 2), size=self.token_length,
+                mode="linear", align_corners=True).transpose(1, 2)
+            start = step if (use_cache and step is not None) else 0
+            x = x + self.align_gate * self.align_projection(
+                aligned[:, start:start + S])
 
         for i, layer in enumerate(self.layers):
             self_kv = None if self_cache is None else self_cache[i]

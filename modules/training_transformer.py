@@ -349,6 +349,9 @@ class TransformerDecoderAudioConditioned(nn.Module):
             conditional=False, 
             use_flash=False,
             codebook_size=1024,
+            aligned_audio=False,
+            grid_ms=20,
+            window_seconds=30.0,
             audio_feature_dim=None,
             num_audio_codebooks=4,
         ):
@@ -399,6 +402,25 @@ class TransformerDecoderAudioConditioned(nn.Module):
         self.compression = compression
         if compression:
             self.audio_compression = TemporalConvPool(dim=d_model,compression=compression)
+
+        # Time-aligned audio path. See forward() for why. Off by default: it adds
+        # parameters, so a checkpoint saved without it cannot be loaded strictly into a
+        # model with it, and vice versa.
+        # Token steps in one full window. The aligned path resamples onto this and then
+        # slices, rather than resampling onto whatever length this forward happens to
+        # get. Training sees 1499 steps (the input/target shift drops one) and cached
+        # generation sees 1, and resampling onto either of those would place the audio
+        # slightly differently in each -- so a model would mean one thing while training
+        # and another while generating.
+        self.token_length = int(round(float(window_seconds) * 1000.0 / float(grid_ms)))
+
+        self.aligned_audio = bool(aligned_audio)
+        if self.aligned_audio:
+            self.align_projection = nn.Linear(d_model, d_model, bias=False)
+            # Zero, so the path contributes nothing at initialisation and a pretrained
+            # checkpoint behaves exactly as it did. The model opens the gate only if the
+            # aligned audio earns it.
+            self.align_gate = nn.Parameter(torch.zeros(1))
 
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
@@ -452,6 +474,32 @@ class TransformerDecoderAudioConditioned(nn.Module):
         if self.compression:
             input_audio = self.audio_compression(input_audio)
         
+        # Hand every token step the audio at its own timestamp, directly.
+        #
+        # Cross-attention has to *search* for the right audio frame, and measurement says
+        # it does not find it: sliding a song two seconds against its own chart cost 23%
+        # of what a different song cost, so three quarters of what the model took from
+        # the audio was time-invariant. Rescaling the cross-attention positions onto one
+        # clock doubled short-shift sensitivity (10% -> 21% at a quarter second) and left
+        # it far from solved.
+        #
+        # But these two sequences are aligned by construction: token step i and audio
+        # time i * grid_ms are the same instant, known exactly. Searching for something
+        # whose location is known is the wrong mechanism. Resampling the audio onto the
+        # token grid and adding it in gives every step its own audio for free, and leaves
+        # cross-attention to do what attention is actually for -- looking somewhere else.
+        #
+        # The gate starts at zero, so at initialisation this is exactly the model without
+        # it and a pretrained checkpoint is undisturbed. That matters here: the RoPE
+        # change altered what positions meant under a checkpoint that had adapted to the
+        # old meaning, its loss rose, and the run could not be read cleanly. A zero gate
+        # cannot do that -- the model adopts the path only if it pays.
+        if self.aligned_audio:
+            aligned = F.interpolate(
+                input_audio.transpose(1, 2), size=self.token_length,
+                mode="linear", align_corners=True).transpose(1, 2)
+            x = x + self.align_gate * self.align_projection(aligned[:, :x.size(1)])
+
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)

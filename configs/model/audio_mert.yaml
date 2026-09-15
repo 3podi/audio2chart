@@ -94,3 +94,12 @@ transformer:
   conditional: false           # If true, expects class embeddings
 
   rope_base: 10000.0           # Base frequency (common: 10000)
+  # Give every token step the audio at its own timestamp, added through a gate that
+  # starts closed. Off by default: it adds parameters, and a checkpoint saved without it
+  # cannot load strictly into a model with it.
+  aligned_audio: false
+  # The full window in token steps, so the aligned path resamples onto a fixed grid
+  # rather than onto whatever length a given forward happens to receive -- training sees
+  # 1499 and cached generation sees 1.
+  grid_ms: ${data.grid_ms}
+  window_seconds: ${data.window_seconds}

@@ -29,6 +29,12 @@ pad_class_weight: 0.1
 # Unlike trainer.resume_path this does not restore the step count, so a
 # checkpoint taken past max_steps can still seed a new run.
 init_from: null
+
+# Refuse a pretrained checkpoint that does not fully match, which is the default and the
+# right one: a silent partial load looks like a training result. Declared so it can be
+# overridden for a run that changes the architecture on purpose -- dropping
+# transformer.compression leaves the checkpoint's audio_compression weights unused.
+pretrained_allow_partial: false
 use_processor: true
 sample_rate: 24000
 
@@ -56,3 +62,12 @@ transformer:
   conditional: false           # If true, expects class embeddings
 
   rope_base: 10000.0           # Base frequency (common: 10000)
+  # Give every token step the audio at its own timestamp, added through a gate that
+  # starts closed. Off by default: it adds parameters, and a checkpoint saved without it
+  # cannot load strictly into a model with it.
+  aligned_audio: false
+  # The full window in token steps, so the aligned path resamples onto a fixed grid
+  # rather than onto whatever length a given forward happens to receive -- training sees
+  # 1499 and cached generation sees 1.
+  grid_ms: ${data.grid_ms}
+  window_seconds: ${data.window_seconds}
