@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import subprocess
@@ -16,12 +17,16 @@ from dataloader.utils_dataloader import find_audio_files
 
 
 logger = logging.getLogger(__name__)
+# Must match config.model.sample_rate. load_raw_audio reads headerless PCM and trusts the
+# rate it is told, so a 16 kHz .raw fed to the 24 kHz Encodec plays 1.5x fast with the
+# chart timing silently wrong -- and training still looks healthy.
+SAMPLE_RATE = 24000
 
 
 def convert_single_audio(
     audio_path: str,
     raw_dir: str,
-    sample_rate: int = 16000,
+    sample_rate: int = SAMPLE_RATE,
 ) -> tuple[str, int, str | None]:
     """Convert one audio file and return its path, sample count, and optional error."""
     source = Path(audio_path)
@@ -29,7 +34,8 @@ def convert_single_audio(
     destination_dir.mkdir(parents=True, exist_ok=True)
     if not source.parent.name:
         return audio_path, -1, f"Invalid parent directory for {audio_path}"
-    destination = destination_dir / f"{source.parent.name}.raw"
+    _tag = hashlib.sha1(str(source).encode("utf-8", "surrogatepass")).hexdigest()[:10]
+    destination = destination_dir / f"{source.parent.name[:80]}_{_tag}.raw"
     if destination.is_file() and destination.stat().st_size > 0:
         return str(destination), destination.stat().st_size // 2, None
 
@@ -64,7 +70,7 @@ def _write_json(path: Path, value: Any) -> None:
 def convert_all_to_raw(
     input_json: str,
     raw_dir: str = "raw_audio",
-    sample_rate: int = 16000,
+    sample_rate: int = SAMPLE_RATE,
     max_workers: int = 8,
 ) -> str:
     """Convert manifest audio files and write a manifest containing raw paths."""
@@ -118,10 +124,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--difficulties", nargs="+", default=["Expert"])
     parser.add_argument("--instruments", nargs="+", default=["Single"])
     parser.add_argument("--raw-dir", default="raw_audio")
-    parser.add_argument("--sample-rate", type=int, default=16000)
+    parser.add_argument("--sample-rate", type=int, default=SAMPLE_RATE)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--output-json", default="results/audio_dataset.json")
     parser.add_argument("--skipped-json", default="results/audio_skipped.json")
+    parser.add_argument("--max-notes", type=int, default=None,
+                        help="Override the per-section note-event ceiling")
     return parser.parse_args()
 
 
@@ -134,6 +142,7 @@ def main() -> None:
         instruments=arguments.instruments,
         output_json=arguments.output_json,
         skipped_json=arguments.skipped_json,
+        **({"max_notes": arguments.max_notes} if arguments.max_notes else {}),
     )
     output = convert_all_to_raw(
         input_json=arguments.output_json,

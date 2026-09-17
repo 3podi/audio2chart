@@ -1,6 +1,31 @@
 name: discrete_seanet
 
-freeze_encoder: false
+# NOTE: configs/audio.yaml composes `model: audio_codec`, not this file, so nothing
+# here reaches a training run. Kept because the discrete path is still selectable.
+#
+# The discrete path returns quantiser indices -- int64, no grad_fn -- so no gradient can
+# reach the encoder however this is set, and leaving it false would make _encode_audio
+# retain an Encodec activation graph for a backward pass that never comes: measured
+# 4.173 GiB peak against 0.807 GiB under no_grad, for identical codes. That measurement
+# is real but it never applied to a run, because audio_codec has had freeze_encoder
+# true since before this work started. I claimed otherwise and was wrong.
+freeze_encoder: true
+# Fraction of training input tokens replaced at random, to blunt exposure bias.
+# Teacher forcing only ever shows a correct history, so the model drifts on its own
+# output: the generated tap rate climbs 0.224 -> 0.723 across one 30s chunk, and at a
+# lower sampling temperature collapses to a flat zero taps and zero sustains.
+# Declared here so it can be overridden normally -- reading it with a default is not
+# enough, Hydra refuses `model.input_noise=X` for a key the config does not define.
+input_noise: 0.0
+# Mean length of a corrupted run. 1.0 corrupts each token independently, which
+# teaches recovery from a typo; the failure that survives it is a rut, and at
+# input_noise 0.08 a run of eight wrong tokens has probability 0.08**8. Above 1.0
+# the same total corruption arrives in contiguous bursts of one repeated token.
+input_noise_burst: 1.0
+# A local checkpoint to take weights from, with a fresh optimizer.
+# Unlike trainer.resume_path this does not restore step count, so a
+# checkpoint taken past max_steps can still seed a new run.
+init_from: null
 use_processor: false
 sample_rate: 16000
 

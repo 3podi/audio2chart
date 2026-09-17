@@ -5,13 +5,21 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# SHA-1 over the file with line endings normalised to LF. Hashing the raw bytes made this
+# test fail on every Windows checkout -- Git's core.autocrlf=true writes CRLF, so the digest
+# never matched and the pins could not be told apart from a real edit.
 FROZEN_HASHES = {
-    "inference/engine.py": "6c1b61f33a9300db5545997524125a750c4afdef",
-    "inference/model_inference.py": "cd526cfbb27acd9921fb51a3c240f489bdad80c6",
+    "inference/engine.py": "2df4766615f13eb0056bce211ce3c25dbf440735",
+    "inference/model_inference.py": "25e1fa71cf175a29a447b731baf8169e5ee5409d",
     "inference/layers.py": "e44bfddff391fe20f482c7152eef11abd9dc88bd",
-    "generate.py": "ddf2d9b1b24aca592e38d8157303531b0f60abd2",
+    "generate.py": "ce239ca69c6e17b28a1686c558e42c5b172d06b9",
     "notebooks/audio2chart_charting.ipynb": "784fe5ffbbc2aa8efdbf20104ae09591e5ab6bf0",
 }
+
+
+def frozen_digest(path):
+    return hashlib.sha1(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def class_names(path):
@@ -29,7 +37,7 @@ class ArchitectureSurfaceTests(unittest.TestCase):
     def test_only_supported_training_models_remain(self):
         self.assertEqual(
             class_names(ROOT / "modules" / "models.py"),
-            {"Encodec", "ResnetBlock2d", "SEANetEncoder2d",
+            {"Encodec", "MERT", "ResnetBlock2d", "SEANetEncoder2d",
              "TransformerEncoder", "TransformerDecoderOnly"},
         )
 
@@ -47,9 +55,14 @@ class ArchitectureSurfaceTests(unittest.TestCase):
         self.assertFalse((ROOT / "modules" / "transformer2.py").exists())
 
     def test_frozen_inference_surface_is_byte_identical(self):
-        for relative_path, expected in FROZEN_HASHES.items():
-            digest = hashlib.sha1((ROOT / relative_path).read_bytes()).hexdigest()
-            self.assertEqual(digest, expected, relative_path)
+        # Report every drifted file, not just the first: asserting inside the loop meant one
+        # stale pin hid whether the other four had changed at all.
+        drifted = {
+            relative_path: frozen_digest(ROOT / relative_path)
+            for relative_path, expected in FROZEN_HASHES.items()
+            if frozen_digest(ROOT / relative_path) != expected
+        }
+        self.assertEqual({}, drifted, f"frozen inference surface changed: {drifted}")
 
     def test_training_configs_use_separate_transformer(self):
         for name in ("audio_codec.yaml", "audio_discrete.yaml"):

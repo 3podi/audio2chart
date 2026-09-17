@@ -126,7 +126,135 @@ def convert_notes_to_seconds(notes, bpm_events, resolution, offset=0.0):
 def time_to_tick(time_sec, bpm, resolution):
     return int(round(time_sec * bpm / 60.0 * resolution))
 
-def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480):
+def seconds_to_tick(time_sec, bmp_segments, resolution, segment_times=None):
+    """
+    Convert an absolute time in seconds to a tick position
+
+    Inverse of tick_to_seconds(), so it honours a piecewise-constant tempo map
+    instead of assuming a single BPM for the whole song.
+
+    Args:
+        time_sec: The absolute time to convert
+        bmp_segments: Preprocessed BMP segments from preprocess_bpm_segments()
+        resolution: Ticks per quarter note (PPQ)
+
+    Returns:
+        Tick position
+    """
+    if not bmp_segments:
+        raise ValueError("bmp_segments cannot be empty")
+
+    times = segment_times if segment_times is not None else [seg[2] for seg in bmp_segments]
+    idx = bisect.bisect_right(times, time_sec) - 1
+
+    if idx < 0:
+        idx = 0
+
+    base_tick, bpm, base_time = bmp_segments[idx]
+    delta_ticks = (time_sec - base_time) * (bpm / 60.0) * resolution
+
+    return int(round(base_tick + delta_ticks))
+
+
+# Subdivisions a charter actually writes, coarsest first. Triplet divisions are in
+# here because 1/12 and 1/24 are ordinary in this music and a power-of-two-only list
+# would snap them onto the wrong grid.
+#
+# Deliberately not extended past 1/96 to give dense passages "somewhere to land". Tried
+# that: adding 1/128 and 1/192 means a run spaced 10 ticks apart snaps onto a 4-tick
+# grid as 0, 12, 20, 28, 40 -- it invents unevenness the model did not emit, which is
+# worse than leaving it alone. test_tick_exactness already documented that case. A
+# passage no subdivision fits is left unsnapped; the fix for it is per-passage
+# selection below, not a finer ruler.
+SNAP_CHOICES = (4, 8, 12, 16, 24, 32, 48, 64, 96)
+
+REST_BEATS = 1.0
+"""A gap this long ends a passage, for the purpose of picking a snap grid.
+
+Patterns live inside runs; a rest between them means the next run is free to be written
+on a different subdivision, exactly as a charter would.
+"""
+
+
+def snap_passages(ticks, resolution, choices=SNAP_CHOICES, rest_beats=REST_BEATS):
+    """Snapped position for every tick, choosing a subdivision per passage.
+
+    choose_snap asks one question of a whole chart -- "is there a subdivision that keeps
+    every note distinct?" -- and answers "no" as soon as any passage is denser than the
+    finest choice. On a generated Diary of Jane it returned 0, so nothing was snapped at
+    all: 11 of 4,495 notes landed on a beat line and 41 on a 1/16. Robert, reading it in
+    Moonscraper: "at tick 65286 the yellow note is supposed to be at 65280 ... a lot of
+    notes are placed in a completely weird step."
+
+    One dense run should not cost the other three minutes their grid. This splits the
+    chart at rests and picks the coarsest subdivision that works for each passage, so
+    the ordinary parts land on 1/16 or 1/32 and only the passage that genuinely cannot
+    be represented is left alone.
+
+    Returns {tick: snapped_tick}, identity for anything that cannot be snapped.
+    """
+    positions = sorted(set(int(t) for t in ticks))
+    if len(positions) < 2:
+        return {t: t for t in positions}
+
+    rest = max(1, int(round(resolution * rest_beats)))
+    passages, current = [], [positions[0]]
+    for previous, tick in zip(positions, positions[1:]):
+        if tick - previous > rest:
+            passages.append(current)
+            current = []
+        current.append(tick)
+    passages.append(current)
+
+    mapping = {}
+    for passage in passages:
+        divisions = choose_snap(passage, resolution, choices)
+        if not divisions:
+            mapping.update({t: t for t in passage})
+            continue
+        step = resolution * 4 / divisions
+        for tick in passage:
+            mapping[tick] = int(round(round(tick / step) * step))
+    return mapping
+
+
+def choose_snap(ticks, resolution, choices=SNAP_CHOICES):
+    """The coarsest subdivision that does not merge two notes into one.
+
+    Snapping is what turns grid output into exact ticks -- at a 10 ms grid the +/-5 ms
+    error is under 20% of a subdivision even for 1/48 notes at 200 BPM, so a note never
+    lands in the wrong slot. But the subdivision has to fit the passage: snap a 24th
+    note run to 16ths and notes collapse onto each other.
+
+    Coarsest-that-preserves is the right rule because it lands on the grid the charter
+    was most likely using, without inventing precision the music does not have.
+
+    Returns 0 when nothing works, meaning "do not snap".
+    """
+    positions = sorted(set(int(t) for t in ticks))
+    if len(positions) < 2:
+        return 0
+    for divisions in choices:
+        step = resolution * 4 / divisions
+        if step < 1:
+            continue
+        snapped = {int(round(t / step)) for t in positions}
+        if len(snapped) == len(positions):
+            return divisions
+    return 0
+
+
+def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480,
+                           bpm_events=None, snap=0, pad_token_id=34, tokenizer=None,
+                           snap_map=None):
+    """
+    Place decoded tokens on the tick grid.
+
+    Passing bpm_events uses that tempo map instead of fixed_bpm; the caller must
+    write the same map into [SyncTrack] or the notes will not line up with the
+    audio. snap rounds each note to the nearest 1/snap note (e.g. snap=32 for
+    thirty-second notes), which is only meaningful once the grid is correct.
+    """
 
     attrs = {
         'is5': False,
@@ -134,11 +262,46 @@ def convert_notes_to_ticks(tokens_list, time_list, fixed_bpm=200, resolution=480
         'isS': False,
     }
 
+    if bpm_events:
+        segments = preprocess_bpm_segments(bpm_events, resolution)
+        segment_times = [segment[2] for segment in segments]
+
+        def to_tick(t):
+            return seconds_to_tick(t, segments, resolution, segment_times)
+    else:
+        def to_tick(t):
+            return time_to_tick(t, fixed_bpm, resolution)
+
+    grid = int(round(resolution * 4 / snap)) if snap else 0
+
     tick_notes = []
+    seen = set()
 
     for t, note in zip(time_list, tokens_list):
-        if note != 34:
-            tick = time_to_tick(t, fixed_bpm, resolution)
-            tick_notes.append((tick,note,0,attrs))
+        if note == pad_token_id:
+            continue
+        if tokenizer is not None and not tokenizer.is_note_token(note):
+            continue  # <bos>/<eos> or out of range
+        tick = to_tick(t)
+        if snap_map is not None:
+            # A per-passage grid, from snap_passages. One subdivision for the whole
+            # chart fails as soon as any passage is denser than the finest choice, and
+            # failing means snapping nothing at all.
+            tick = snap_map.get(tick, tick)
+            if (tick, note) in seen:
+                continue
+            seen.add((tick, note))
+        elif grid:
+            tick = int(round(tick / grid)) * grid
+            # snapping can collapse neighbouring tokens onto the same lane
+            if (tick, note) in seen:
+                continue
+            seen.add((tick, note))
+        if tokenizer is not None:
+            note_duration = tokenizer.sustain_ticks(note, resolution)
+            note_attrs = tokenizer.attrs_of(note)
+        else:
+            note_duration, note_attrs = 0, attrs
+        tick_notes.append((tick, note, note_duration, note_attrs))
 
     return tick_notes

@@ -1,5 +1,6 @@
 import logging
 import os
+from collections import OrderedDict
 import random
 import subprocess
 import numpy as np
@@ -53,6 +54,7 @@ class ChunkedWaveformDataset(Dataset):
         grid_ms: int = 20,
         error_policy: str = "strict",
         max_sample_retries: int = 5,
+        chart_cache_size: int = 512,
     ):
         self.data = data
         self.bos_token = bos_token
@@ -89,24 +91,14 @@ class ChunkedWaveformDataset(Dataset):
         self.chart_processor = ChartProcessor(self.difficulties, self.instruments)
         self.music_augmenter = MusicAugmenter(enabled=augment, sample_rate=self.sample_rate)
 
-        # Pre-cache chart data
-        self.chart_cache: Dict[Tuple[str, str], Tuple[List, List, int, float]] = {}
-        logger.info("Pre-caching chart metadata")
-        for item in data:
-            key = (item["chart_path"], item["difficulty"])
-            if key not in self.chart_cache:
-                try:
-                    self.chart_processor.read_chart(chart_path=item["chart_path"], target_sections=item["difficulty"])
-                    notes = self.chart_processor.notes[item["difficulty"]]
-                    bpm_events = self.chart_processor.synctrack
-                    resolution = int(self.chart_processor.song_metadata['Resolution'])
-                    offset = float(self.chart_processor.song_metadata['Offset'])
-                    self.chart_cache[key] = (notes, bpm_events, resolution, offset)
-                except (KeyError, OSError, TypeError, ValueError) as e:
-                    if self.error_policy == "strict":
-                        raise RuntimeError(f"Failed to cache chart {key}") from e
-                    logger.warning("Skipping invalid chart %s: %s", key, e)
-                    self.chart_cache[key] = None
+        # Chart metadata is cached lazily and bounded. Caching all of it up front cost about
+        # 3.5 GB in this process -- and Windows spawns dataloader workers rather than forking,
+        # so every worker received a pickled copy: measured at ~18 GB consumed in the two
+        # minutes around worker spawn, leaving 0.5 GB free on a 32 GB machine. It also bought
+        # very little, because each song is visited roughly once per epoch, so a full cache
+        # only ever helps across epochs.
+        self.chart_cache_size = max(1, int(chart_cache_size))
+        self.chart_cache: "OrderedDict[Tuple[str, str], Optional[Tuple[List, List, int, float]]]" = OrderedDict()
 
         # If auto-converting .opus to .raw
         if self.decode_to_raw_on_init and not os.path.exists(self.raw_dir):
@@ -164,10 +156,48 @@ class ChunkedWaveformDataset(Dataset):
 
         # Worker-local state
         self._worker_id = None
-        self._audio_cache = {}
+        # Ordered so the oldest entry can be evicted; see _load_audio_file.
+        self._audio_cache = OrderedDict()
         self._current_chunk_id = None
 
         logger.info("Dataset initialized with %d items and chunk size %d", len(self.items), chunk_size)
+
+    def __getstate__(self):
+        """Send workers an empty cache; each fills its own, bounded.
+
+        Windows spawns dataloader workers rather than forking, so whatever this object
+        holds is pickled into every one of them. A populated chart cache therefore
+        multiplies by num_workers + 1.
+        """
+        state = self.__dict__.copy()
+        state["chart_cache"] = OrderedDict()
+        return state
+
+    def _chart_entry(self, key: Tuple[str, str]):
+        """Parsed chart for `key`, or None if it cannot be read. LRU-bounded."""
+        if key in self.chart_cache:
+            self.chart_cache.move_to_end(key)
+            return self.chart_cache[key]
+
+        chart_path, section = key
+        entry = None
+        try:
+            self.chart_processor.read_chart(chart_path=chart_path, target_sections=section)
+            entry = (
+                self.chart_processor.notes[section],
+                self.chart_processor.synctrack,
+                int(self.chart_processor.song_metadata["Resolution"]),
+                float(self.chart_processor.song_metadata["Offset"]),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            if self.error_policy == "strict":
+                raise RuntimeError(f"Failed to read chart {key}") from error
+            logger.warning("Skipping invalid chart %s: %s", key, error)
+
+        self.chart_cache[key] = entry
+        while len(self.chart_cache) > self.chart_cache_size:
+            self.chart_cache.popitem(last=False)
+        return entry
 
     def _convert_all_to_raw(self):
         """Convert all .opus files to .raw in background (one-time setup)"""
@@ -233,16 +263,51 @@ class ChunkedWaveformDataset(Dataset):
             return True
         return False
 
+    AUDIO_CACHE_ENTRIES = 32
+    """Decoded songs held per worker. At ~10.8 MB each that is ~350 MB per worker,
+    which four workers can afford; the `max_cache_gb` budget could not be trusted for
+    this because it is per worker and sized in gigabytes."""
+
     def _load_audio_file(self, audio_path: str) -> Tuple[torch.Tensor, int]:
-        if audio_path in self._audio_cache:
-            return self._audio_cache[audio_path]
-        
+        """Decoded audio for one song, reusing a recent read where possible.
+
+        This cache was read but never written, so every sample re-read the whole file.
+        Populating it is worth doing -- at 15 s windows with one piece a read serves a
+        quarter of what it served at 30 s and two, so four times the I/O -- but it is a
+        small win, and an earlier version of this note claimed far more than that.
+
+        CORRECTION. That version said the dead cache was why "the GPU starves:
+        utilisation measured swinging 87% -> 2%". It was not. Lightning's profiler over
+        256 batches of the real training config puts train_dataloader_next at 0.00048 s
+        against a 0.358 s batch -- 0.1%. The loader has never been the bottleneck at
+        either window size, and filling this cache moved throughput 0.77 -> 0.82 it/s.
+
+        The 87% -> 2% swing was real but had another cause: val_check_interval counts
+        batches while ModelCheckpoint's every_n_train_steps counts optimizer steps, so a
+        run launched with both at 100 under accumulate_grad_batches=8 validated once per
+        training batch and wrote a 2.42 GB checkpoint to the 108 MB/s song drive every
+        100 batches. Fixing that took the same config from 0.82 to 2.79 it/s. The GPU was
+        idle waiting on disk, which looks identical from nvidia-smi.
+
+        Bounded by count rather than by the `max_cache_gb` budget, because that budget
+        is what made populating this risky: 6 GB per worker across four workers is the
+        host-RAM exhaustion the chart cache already caused once. A fixed number of
+        entries is predictable -- 32 songs at ~10.8 MB is ~350 MB per worker.
+        """
+        cached = self._audio_cache.get(audio_path)
+        if cached is not None:
+            self._audio_cache.move_to_end(audio_path)
+            return cached
+
         try:
             if self.use_predecoded_raw:
                 # Must have 'length_samples' in item metadata
                 waveform, sr = load_raw_audio(audio_path, self.sample_rate)  # load longer buffer
             else:
                 waveform, sr = load_opus_ffmpeg(audio_path, self.sample_rate, timeout_seconds=20)
+            self._audio_cache[audio_path] = (waveform, sr)
+            while len(self._audio_cache) > self.AUDIO_CACHE_ENTRIES:
+                self._audio_cache.popitem(last=False)
             return waveform, sr
 
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -284,16 +349,17 @@ class ChunkedWaveformDataset(Dataset):
 
         try:
             key = (item["chart_path"], item["difficulty"])
-            notes, bpm_events, resolution, offset = self.chart_cache[key]
-            if notes is None:
+            entry = self._chart_entry(key)
+            if entry is None:
                 raise ValueError("Chart was marked as bad")
+            notes, bpm_events, resolution, offset = entry
 
             #logger.info(f"[WORKER {worker_id}] Got chart cache, encoding notes...", extra={'worker_id': worker_id})
 
             start_seconds = start_sample / self.sample_rate
             end_seconds = end_sample / self.sample_rate
 
-            tokenized_chart = self.tokenizer.encode(note_list=notes)
+            tokenized_chart = self.tokenizer.encode(note_list=notes, resolution=resolution)
             #logger.info(f"[WORKER {worker_id}] Tokenized {len(tokenized_chart)} notes", extra={'worker_id': worker_id})
             tokenized_chart = self.tokenizer.format_seconds(
                 tokenized_chart, bpm_events, resolution=resolution, offset=offset
@@ -379,9 +445,9 @@ class ChunkedWaveformDataset(Dataset):
                 if waveform.shape[0] > 1:
                     waveform = waveform.mean(dim=0, keepdim=True)
 
-                # Validate chart exists (already cached)
+                # Validate the chart is readable before doing any window work.
                 key = (item["chart_path"], item["difficulty"])
-                if self.chart_cache.get(key) is None:
+                if self._chart_entry(key) is None:
                     if attempt < max_attempts - 1:
                         continue
                     else:
@@ -641,12 +707,17 @@ def create_chunked_audio_chart_dataloader(
     processor_checkpoint: str = "facebook/encodec_24khz",
     error_policy: str = "strict",
     max_sample_retries: int = 5,
+    chart_cache_size: int = 512,
 ) -> Tuple[DataLoader, Dict]:
     """
     Set use_predecoded_raw=True and predecode files with ffmpeg beforehand.
     """
 
-    # Adjust cache per worker
+    # Adjust cache per worker. Note this budget is per dataloader, and persistent_workers
+    # keeps the training loader's workers alive while validation spawns its own set, so
+    # the machine must hold roughly twice this figure at once. The 20 GB default therefore
+    # means 40 GB of audio cache during validation, which on a 32 GB host kills the run at
+    # the most memory-hungry moment -- serializing a checkpoint right after validation.
     if num_workers > 0:
         max_cache_gb = max_cache_gb / num_workers
 
@@ -696,6 +767,7 @@ def create_chunked_audio_chart_dataloader(
         grid_ms=grid_ms,
         error_policy=error_policy,
         max_sample_retries=max_sample_retries,
+        chart_cache_size=chart_cache_size,
     )
 
     logger.info("Created dataset with %d items", len(dataset))

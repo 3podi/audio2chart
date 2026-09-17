@@ -1,6 +1,40 @@
 name: discrete_encodec
 
 freeze_encoder: true
+# Fraction of training input tokens replaced at random, to blunt exposure bias.
+# Teacher forcing only ever shows a correct history, so the model drifts on its own
+# output: the generated tap rate climbs 0.224 -> 0.723 across one 30s chunk, and at a
+# lower sampling temperature collapses to a flat zero taps and zero sustains.
+# Declared here so it can be overridden normally -- reading it with a default is not
+# enough, Hydra refuses `model.input_noise=X` for a key the config does not define.
+input_noise: 0.0
+# Mean length of a corrupted run. 1.0 corrupts each token independently, which
+# teaches recovery from a typo; the failure that survives it is a rut, and at
+# input_noise 0.08 a run of eight wrong tokens has probability 0.08**8. Above 1.0
+# the same total corruption arrives in contiguous bursts of one repeated token.
+input_noise_burst: 1.0
+# Weight on the pad token in the cross-entropy loss.
+#
+# Pad is ~86% of targets. At 0.1 it contributes 0.086 of the loss against 0.14 from real
+# notes, so notes dominate 62/38 despite being 14% of the data -- the model learns which
+# note to play and not whether to play at all. Measured consequence on both 2026-09-11
+# runs: two notes in context collapse P(pad) 0.90 -> 0.09, generation saturates, and the
+# charts never rest.
+#
+# Declared here so it can be swept. Reading it with a default is not enough; Hydra
+# refuses `model.pad_class_weight=X` for a key the config does not define.
+pad_class_weight: 0.1
+
+# A local checkpoint to take weights from, with a fresh optimizer.
+# Unlike trainer.resume_path this does not restore the step count, so a
+# checkpoint taken past max_steps can still seed a new run.
+init_from: null
+
+# Refuse a pretrained checkpoint that does not fully match, which is the default and the
+# right one: a silent partial load looks like a training result. Declared so it can be
+# overridden for a run that changes the architecture on purpose -- dropping
+# transformer.compression leaves the checkpoint's audio_compression weights unused.
+pretrained_allow_partial: false
 use_processor: true
 sample_rate: 24000
 
@@ -28,3 +62,12 @@ transformer:
   conditional: false           # If true, expects class embeddings
 
   rope_base: 10000.0           # Base frequency (common: 10000)
+  # Give every token step the audio at its own timestamp, added through a gate that
+  # starts closed. Off by default: it adds parameters, and a checkpoint saved without it
+  # cannot load strictly into a model with it.
+  aligned_audio: false
+  # The full window in token steps, so the aligned path resamples onto a fixed grid
+  # rather than onto whatever length a given forward happens to receive -- training sees
+  # 1499 and cached generation sees 1.
+  grid_ms: ${data.grid_ms}
+  window_seconds: ${data.window_seconds}

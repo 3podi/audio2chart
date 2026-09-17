@@ -29,16 +29,26 @@ class RMSNorm(torch.nn.Module):
         t = t * torch.rsqrt(torch.mean(t**2, dim=-1, keepdim=True) + self.eps)
         return (t * self.scale).to(dtype)
 
-def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0) -> torch.Tensor:
+def apply_rotary_emb(x: torch.Tensor, dim: int, base: float = 10000.0,
+                     position_scale: float = 1.0) -> torch.Tensor:
     """
     Apply Rotary Position Embeddings (RoPE) to the input tensor.
+
+    `position_scale` puts a sequence into somebody else's units. RoPE encodes relative
+    position, which assumes both sides of an attention are on one clock. In
+    cross-attention here they are not: a token step is 10 ms and an audio frame after
+    compression is 26.7 ms, so a time-aligned pair is (token i, audio frame 0.375 i) and
+    the relative offset RoPE sees for it runs 0, 234, 469, 937 across a window. Scaling
+    the audio positions by the length ratio puts an aligned pair at offset 0 everywhere,
+    which is the relationship the model needs to be able to express.
     """
     seq_len = x.size(2)
     device = x.device
     dtype = x.dtype
 
     theta = base ** (-torch.arange(0, dim, 2, device=device, dtype=dtype) / dim)
-    positions = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
+    positions = (torch.arange(seq_len, device=device, dtype=dtype)
+                 * position_scale).unsqueeze(1)
     angles = positions * theta.unsqueeze(0)
     sin = torch.sin(angles)
     cos = torch.cos(angles)
@@ -183,10 +193,19 @@ class CrossAttention(nn.Module):
         K = self.w_k(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
         V = self.w_v(key_value).view(B, T_kv, self.num_kv_heads, self.d_k).transpose(1, 2)  # (B, H_kv, T_kv, Dk)
 
-        # Apply RoPE if enabled
+        # Apply RoPE if enabled.
+        #
+        # The audio positions are rescaled into token units. Without this the two
+        # sequences are on different clocks -- 10 ms a token against 26.7 ms an audio
+        # frame -- and "the same moment in time" lands at a different relative offset at
+        # every position, which is the one thing RoPE cannot represent. Measured on the
+        # model trained without it: sliding a song two seconds against its own chart cost
+        # 23% of what handing it a different song cost, so three quarters of what it took
+        # from the audio was time-invariant.
         if self.use_rope:
             Q = apply_rotary_emb(Q, dim=self.d_k, base=self.rope_base)
-            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base)
+            K = apply_rotary_emb(K, dim=self.d_k, base=self.rope_base,
+                                 position_scale=(T_q / T_kv) if T_kv else 1.0)
 
         # Create combined attention mask
         attn_mask = None
@@ -330,6 +349,9 @@ class TransformerDecoderAudioConditioned(nn.Module):
             conditional=False, 
             use_flash=False,
             codebook_size=1024,
+            aligned_audio=False,
+            grid_ms=20,
+            window_seconds=30.0,
             audio_feature_dim=None,
             num_audio_codebooks=4,
         ):
@@ -380,6 +402,25 @@ class TransformerDecoderAudioConditioned(nn.Module):
         self.compression = compression
         if compression:
             self.audio_compression = TemporalConvPool(dim=d_model,compression=compression)
+
+        # Time-aligned audio path. See forward() for why. Off by default: it adds
+        # parameters, so a checkpoint saved without it cannot be loaded strictly into a
+        # model with it, and vice versa.
+        # Token steps in one full window. The aligned path resamples onto this and then
+        # slices, rather than resampling onto whatever length this forward happens to
+        # get. Training sees 1499 steps (the input/target shift drops one) and cached
+        # generation sees 1, and resampling onto either of those would place the audio
+        # slightly differently in each -- so a model would mean one thing while training
+        # and another while generating.
+        self.token_length = int(round(float(window_seconds) * 1000.0 / float(grid_ms)))
+
+        self.aligned_audio = bool(aligned_audio)
+        if self.aligned_audio:
+            self.align_projection = nn.Linear(d_model, d_model, bias=False)
+            # Zero, so the path contributes nothing at initialisation and a pretrained
+            # checkpoint behaves exactly as it did. The model opens the gate only if the
+            # aligned audio earns it.
+            self.align_gate = nn.Parameter(torch.zeros(1))
 
         # Output projection
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
@@ -433,6 +474,32 @@ class TransformerDecoderAudioConditioned(nn.Module):
         if self.compression:
             input_audio = self.audio_compression(input_audio)
         
+        # Hand every token step the audio at its own timestamp, directly.
+        #
+        # Cross-attention has to *search* for the right audio frame, and measurement says
+        # it does not find it: sliding a song two seconds against its own chart cost 23%
+        # of what a different song cost, so three quarters of what the model took from
+        # the audio was time-invariant. Rescaling the cross-attention positions onto one
+        # clock doubled short-shift sensitivity (10% -> 21% at a quarter second) and left
+        # it far from solved.
+        #
+        # But these two sequences are aligned by construction: token step i and audio
+        # time i * grid_ms are the same instant, known exactly. Searching for something
+        # whose location is known is the wrong mechanism. Resampling the audio onto the
+        # token grid and adding it in gives every step its own audio for free, and leaves
+        # cross-attention to do what attention is actually for -- looking somewhere else.
+        #
+        # The gate starts at zero, so at initialisation this is exactly the model without
+        # it and a pretrained checkpoint is undisturbed. That matters here: the RoPE
+        # change altered what positions meant under a checkpoint that had adapted to the
+        # old meaning, its loss rose, and the run could not be read cleanly. A zero gate
+        # cannot do that -- the model adopts the path only if it pays.
+        if self.aligned_audio:
+            aligned = F.interpolate(
+                input_audio.transpose(1, 2), size=self.token_length,
+                mode="linear", align_corners=True).transpose(1, 2)
+            x = x + self.align_gate * self.align_projection(aligned[:, :x.size(1)])
+
         # Pass through decoder layers
         for layer in self.layers:
             x = layer(decoder_input=x, encoder_output=input_audio, decoder_mask=attention_mask)

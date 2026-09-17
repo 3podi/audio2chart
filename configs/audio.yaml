@@ -6,16 +6,134 @@ defaults:
 
 # Add audio encoder lr
 optimizer:
-  lr_audio: 1e-3
+  # Fine-tuning, not training from scratch: 1e-3 is the from-scratch LR and would wash
+  # the pretrained weights out in the first few hundred steps.
+  lr: 1e-4
+  lr_audio: 1e-3          # unused while model.freeze_encoder is true
+  # Measured on the 3060 Ti: 9.1 s per batch, and one batch per song, so an epoch over
+  # ~11,000 training songs is about 28 hours and yields ~2,750 optimizer steps at the
+  # accumulation below. The repo defaults (warmup 750, max 30000) and my first pass
+  # (warmup 500, max 200000) were both written for a machine that gets far more steps
+  # per epoch -- warmup alone would not have finished inside a full epoch here.
+  warmup_steps: 200
+  max_steps: 6000         # roughly two epochs
 
 data:
-  window_seconds: 30
-  grid_ms: 20
+  root_folder: G:/a2c_data
+  # 10 ms at 15 s, not 20 ms at 30 s. Both are 1502 tokens, so this costs nothing, and
+  # it is the difference between the model seeing the tapping charts and not.
+  #
+  # discretize_time bins notes at grid_ms and a window with two notes in one bin is
+  # discarded. Measured over 120 tapping charts: 22.8% of note gaps are shorter than
+  # 20 ms, 99% of charts contain at least one, and only 18.2% of 30 s windows survive.
+  # Robert's own "yax03 - Down" has gaps down to 7.3 ms. The 82% being dropped is the
+  # fast tapping that defines the overchart style we want to learn.
+  #
+  # Those figures come from 120 hand-picked tapping charts. Re-measured over the whole
+  # 1454-song tapping training split the picture is less dramatic but points the same
+  # way, and this is the population that actually trains:
+  #
+  #   grid  window  tokens  usable  songs 100%  songs dropped
+  #   20ms    30s     1502   59.9%        36%     293
+  #   10ms    15s     1502   97.0%        80%       7   <-- this
+  #    8ms    15s     1877   98.6%        90%       3
+  #    8ms    12s     1502   98.8%        90%       3
+  #    6ms    12s     2002   99.5%        95%       1
+  #    5ms    10s     2002   99.6%        96%       0
+  #
+  # Note the fourth row. 8 ms at a 12 s window costs exactly the same 1502 tokens as the
+  # setting in use and is strictly better data -- 97.0% -> 98.8% of windows, and the
+  # share of songs with no unusable window at all goes 80% -> 90%. The residual loss is
+  # concentrated in the fastest charts, which are the ones this project cares about: 25
+  # songs are below 50% usable at 10 ms.
+  #
+  # It has not been taken because changing the grid invalidates the validation cache and
+  # the corpus needs revalidating (~10 min), and any run in flight is wasted. It is the
+  # obvious change to make at the start of the next run rather than during one.
+  #
+  # It is also a sync fault at 20 ms: +/-10 ms of quantisation error where notes sit
+  # 18 ms apart.
+  window_seconds: 15
+  grid_ms: 10
+  # A few windows still collide even at 10 ms; 'skip' drops those instead of failing.
+  error_policy: skip
 
 loader:
   augment: false
+  # The tensor the model sees holds batch_size * num_pieces sequences, not batch_size:
+  # _collate_batch_impl flattens num_pieces windows out of every song into the batch. At
+  # grid_ms 10 each window is 1502 tokens (15 s / 10 ms, + bos/eos, under max_length 2048),
+  # through a 1024-wide, 16-layer decoder. The repo defaults (4 x 6 train, 64 x 1 val)
+  # would be 24 and 64 sequences per step -- certain OOM on this card.
+  #
+  # Measured on the 3060 Ti: 4 sequences per step peaked at 7986 MiB of 8192, and 2 at
+  # 7972 -- 14 MiB apart. Memory here is the fixed cost of 230 M parameters plus their
+  # gradients and AdamW moments (~3.7 GB in fp32) plus the caching allocator, not the
+  # activations, so trading sequences away buys no headroom. Both configurations sit at
+  # ~97% of the card and will OOM if anything else claims VRAM.
+  #
+  # 2 is kept because it is the configuration with a clean measured step time (9.1 s/batch
+  # on a quiet drive). Real headroom needs a different lever -- freezing the lower decoder
+  # layers would cut gradients and optimizer state, which is where the memory actually is.
+  batch_size: 1
+  train_num_pieces: 2
+  val_batch_size: 1
+  # Four windows per song rather than one. The monitored metric decides which weights are
+  # kept as "best", and at one window per song it was too noisy to decide anything:
+  # val/acc_nonpad_epoch swung +/-0.013 around 0.653 across consecutive validations, which
+  # on a 100-window sample is what sampling noise alone produces. A run was read as
+  # overfitting on the strength of three such points and the next one made a new high.
+  #
+  # This is the cheap way to fix it. limit_val_batches would need four times the song
+  # loads for the same number of windows; num_pieces takes four windows from each song
+  # already being read, so the extra cost is compute rather than disk, and validation runs
+  # under no_grad so the memory is smaller than a training batch of the same shape.
+  val_num_pieces: 4
+  num_workers: 6
+  # Audio cache budget per dataloader, divided among its workers. The 20 GB default
+  # becomes 40 GB during validation, because persistent_workers keeps the training
+  # workers alive while the validation loader spawns its own -- which killed a run at
+  # batch 1200 on this 32 GB host, silently, right as it serialized a checkpoint.
+  # 6 GB here is 1.5 GB per worker and at most 12 GB across both loaders.
+  max_cache_gb: 6.0
 
-seed: 42
+model:
+  # Fine-tune from the released 20 ms checkpoint. The transformer block below must keep
+  # matching its config.json or load_pretrained_transformer raises on shape mismatch.
+  pretrained: 3podi/charter-v1.0-20-M-best-acc
+  # VRAM is dominated by trainable parameters: 12 bytes of gradient and AdamW moments per
+  # parameter on top of the 4 the parameter itself costs. At 230 M trainable the card ran
+  # at ~97% and produced three different low-level failures in three runs -- a truncated
+  # checkpoint, a segfault, and CUBLAS_STATUS_EXECUTION_FAILED inside attention. Freezing
+  # the lower half of the decoder holds the general audio-to-chart mapping the released
+  # checkpoint already learned and frees roughly a gigabyte.
+  freeze_layers: 8
+  transformer:
+    d_model: 1024
+    d_ff: 4096
+    n_heads: 8
+    num_kv_heads: 8
+    n_layers: 16
+    compression: 2
+
+trainer:
+  # Defaults to false, which produces no checkpoints at all.
+  save_run: true
+  # At 9.1 s/batch this validates and checkpoints roughly every 2.5 hours. The default
+  # (once per epoch) would mean a single save point per day, and an OOM at hour 20 --
+  # entirely possible at 97% VRAM -- would lose the whole run.
+  val_check_interval: 1000
+  # The 20% val split is ~2,740 songs; validating all of it costs hours every time.
+  limit_val_batches: 200
+  # Lightning counts OPTIMIZER steps here, not batches -- with accumulate_grad_batches: 4
+  # a value of 200 meant 800 batches, about 2.2 hours, not the ~27 minutes intended. 50
+  # optimizer steps is 200 batches, ~30 minutes at the measured 9 s/batch.
+  checkpoint_every_n_steps: 50
+  # 2 sequences per step x 4 = 8 sequences per optimizer step. Larger accumulation looks
+  # attractive but at 9.1 s/batch, 32 would mean 4.9 minutes per optimizer step and only
+  # ~344 steps in a 28-hour epoch -- too few for any schedule to do useful work.
+  accumulate_grad_batches: 4
 
 tracking:
+  enabled: false
   tags: [audio]

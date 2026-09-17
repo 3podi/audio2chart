@@ -1,6 +1,7 @@
 import math
 import inspect
 import logging
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,6 +32,9 @@ class Encodec(nn.Module):
         self.checkpoint = checkpoint
         self.bandwidth = float(bandwidth)
         self.output_kind = "codes"
+        # SEANet's LSTM has no fused bf16 kernel; see WaveformTransformerDiscrete
+        # ._encode_audio. 0.130s per call in fp32 against 0.712s under autocast.
+        self.prefers_fp32 = True
         self.model = EncodecModel.from_pretrained(checkpoint)
         self.codebook_dim = self.model.config.codebook_dim  # 128
         self.target_bandwidths = self.model.config.target_bandwidths  # [1.5, 3, 6, 12, 24]
@@ -519,3 +523,122 @@ class TransformerDecoderOnly(nn.Module):
 #                             #
 #                             #
 ###############################
+
+
+class MERT(nn.Module):
+    """Music-understanding features instead of a compression codec.
+
+    Encodec is trained to reconstruct a waveform at low bitrate. At the 3 kbps this
+    project uses it is throwing away most of what it heard, and what survives is
+    whatever is cheapest to code -- not whatever identifies the line a charter follows.
+    Measured, the model barely uses its audio at all: swapping in a different song's
+    audio costs only +0.189 nats, and that number has not moved across the pad-weight
+    fix, guidance, input noise, or stem mixing.
+
+    MERT is trained on music with musical targets (a masked-prediction objective over
+    acoustic and pitch teachers), so its features are meant to carry what the music is
+    doing rather than how to rebuild the waveform.
+
+    It is close to a drop-in here. MERT-v1-95M runs at 24 kHz, the rate the pipeline
+    already uses, and its conv stack strides by 320, so it emits 75 frames a second --
+    exactly Encodec's frame rate. The cross-attention sequence length is unchanged and
+    no audio needs re-caching.
+
+    LOADED WITHOUT trust_remote_code. The published repo ships custom modeling code and
+    the usual recipe is AutoModel(..., trust_remote_code=True), which executes arbitrary
+    Python from a downloaded repository -- the same risk Robert ruled on for
+    weights_only=False ("only for a checkpoint you produced yourself, never for one that
+    was downloaded"). Reading that code rather than running it shows MERTModel subclasses
+    HubertModel and its only addition, MERTFeatureProjection, is identical to
+    HubertFeatureProjection whenever feature_extractor_cqt is false, which it is for this
+    checkpoint. So the weights are loaded into the transformers library's own audited
+    HuBERT: all 211 tensors map with nothing missing and nothing unexpected, verified in
+    tests/test_mert_encoder.py. If a checkpoint ever turns CQT on, this raises rather
+    than silently loading a different architecture.
+    """
+
+    def __init__(self, checkpoint="m-a-p/MERT-v1-95M", sample_rate=24000,
+                 layer=None, **kwargs):
+        super().__init__()
+        import json
+
+        from huggingface_hub import hf_hub_download
+        from transformers import HubertConfig, HubertModel
+
+        self.output_kind = "features"
+        # No recurrence here, so the fp32 forcing Encodec needs is pure cost.
+        self.prefers_fp32 = False
+        self.checkpoint = checkpoint
+
+        raw = json.loads(
+            Path(hf_hub_download(checkpoint, "config.json")).read_text(encoding="utf-8"))
+        if raw.get("feature_extractor_cqt"):
+            raise ValueError(
+                f"{checkpoint} enables feature_extractor_cqt, which is the one part of "
+                "MERT that is not plain HuBERT. Loading it as HuBERT would silently drop "
+                "the CQT branch.")
+        if int(raw.get("sample_rate", sample_rate)) != int(sample_rate):
+            raise ValueError(
+                f"{checkpoint} expects {raw.get('sample_rate')} Hz, pipeline is "
+                f"{sample_rate} Hz")
+
+        raw.pop("auto_map", None)
+        raw.pop("architectures", None)
+        config = HubertConfig(**{k: v for k, v in raw.items() if k != "model_type"})
+        self.model = HubertModel.from_pretrained(checkpoint, config=config)
+        self.output_dim = int(config.hidden_size)
+        self.sample_rate = int(sample_rate)
+
+        # Which layer to read. MERT's own guidance, and the MARBLE results, are that no
+        # single layer is best for everything -- lower layers carry onsets and timbre,
+        # middle layers carry more musical structure, and the last is specialised to the
+        # pretraining objective. Rather than guess, the default learns a softmax weighting
+        # over all 13 hidden states, which is 13 parameters and lets the decoder take what
+        # it needs. An int pins one layer instead, for ablations.
+        self.layer = layer
+        if layer is None:
+            self.layer_weights = nn.Parameter(
+                torch.zeros(int(config.num_hidden_layers) + 1))
+        else:
+            self.layer_weights = None
+
+    def trainable_when_frozen(self):
+        """Parameters that must keep learning even with freeze_encoder set.
+
+        The 95M backbone is pretrained and stays frozen. The layer blend is not: it is
+        13 scalars this class adds, and freezing them makes the "learned" weighting a
+        fixed uniform average.
+        """
+        return [] if self.layer_weights is None else [self.layer_weights]
+
+    def forward(self, input_values):
+        # The pipeline carries audio as [B, 1, T]; HuBERT wants [B, T].
+        if input_values.dim() == 3:
+            input_values = input_values.squeeze(1)
+
+        # preprocessor_config.json sets do_normalize with feat_extract_norm "group", so
+        # the waveform is zero-mean unit-variance per clip. Done here rather than through
+        # Wav2Vec2FeatureExtractor to keep this on-GPU and out of the dataloader.
+        values = input_values.float()
+        mean = values.mean(dim=-1, keepdim=True)
+        variance = values.var(dim=-1, keepdim=True, unbiased=False)
+        values = (values - mean) / torch.sqrt(variance + 1e-7)
+
+        output = self.model(values, output_hidden_states=True)
+        if self.layer_weights is None:
+            return output.hidden_states[self.layer]
+
+        # The blend has to be built with gradients even though the backbone is frozen.
+        #
+        # _encode_audio wraps a frozen encoder in torch.no_grad(), which is right for the
+        # 95M backbone and wrong for these 13 scalars: under no_grad they get no gradient
+        # and the "learned" weighting is a fixed uniform average. Caught by running a step
+        # on CPU and reading layer_weights.grad, which was None.
+        #
+        # Re-enabling here keeps the backbone frozen -- the stacked states arrive with
+        # requires_grad False and stay detached -- while letting the multiply record a
+        # graph node for the weights alone.
+        with torch.enable_grad():
+            stacked = torch.stack(output.hidden_states, dim=0)
+            weights = torch.softmax(self.layer_weights, dim=0).view(-1, 1, 1, 1)
+            return (stacked * weights).sum(dim=0)

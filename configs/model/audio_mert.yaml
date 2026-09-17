@@ -1,0 +1,105 @@
+name: mert_features
+
+freeze_encoder: true
+# Fraction of training input tokens replaced at random, to blunt exposure bias.
+# Teacher forcing only ever shows a correct history, so the model drifts on its own
+# output: the generated tap rate climbs 0.224 -> 0.723 across one 30s chunk, and at a
+# lower sampling temperature collapses to a flat zero taps and zero sustains.
+# Declared here so it can be overridden normally -- reading it with a default is not
+# enough, Hydra refuses `model.input_noise=X` for a key the config does not define.
+input_noise: 0.0
+# Mean length of a corrupted run. 1.0 corrupts each token independently, which
+# teaches recovery from a typo; the failure that survives it is a rut, and at
+# input_noise 0.08 a run of eight wrong tokens has probability 0.08**8. Above 1.0
+# the same total corruption arrives in contiguous bursts of one repeated token.
+input_noise_burst: 1.0
+# Weight on the pad token in the cross-entropy loss.
+#
+# Pad is ~86% of targets. At 0.1 it contributes 0.086 of the loss against 0.14 from real
+# notes, so notes dominate 62/38 despite being 14% of the data -- the model learns which
+# note to play and not whether to play at all. Measured consequence on both 2026-09-11
+# runs: two notes in context collapse P(pad) 0.90 -> 0.09, generation saturates, and the
+# charts never rest.
+#
+# Declared here so it can be swept. Reading it with a default is not enough; Hydra
+# refuses `model.pad_class_weight=X` for a key the config does not define.
+pad_class_weight: 0.1
+
+# A local checkpoint to take weights from, with a fresh optimizer.
+# Unlike trainer.resume_path this does not restore the step count, so a
+# checkpoint taken past max_steps can still seed a new run.
+init_from: null
+
+# The released Encodec checkpoint cannot fully match a MERT model, and the mismatch is
+# exactly two things, both verified before this was enabled:
+#
+#   missing   transformer.audio_projection.weight  -- the Linear(768 -> 1024) that reads
+#             MERT features. No Encodec checkpoint can contain it.
+#   unused    transformer.codes_embedding.0..3     -- the four codebook embeddings, which
+#             a feature encoder does not have.
+#
+# Everything else transfers: all 16 decoder layers, cross-attention, token embedding and
+# output projection. Scoped to this config rather than passed on the command line, so it
+# cannot quietly excuse a genuinely wrong architecture in an Encodec run.
+pretrained_allow_partial: true
+# No processor. The dataloader builds one with AutoProcessor.from_pretrained(
+# model.encoder.checkpoint), which for MERT resolves through AutoConfig and demands
+# trust_remote_code -- the thing modules.models.MERT exists to avoid. It also would not
+# fit: that call site passes `raw_audio=` and reads back a `padding_mask`, which is
+# EncodecFeatureExtractor's API, not Wav2Vec2FeatureExtractor's.
+#
+# Nothing is lost. MERT's preprocessor only normalises the waveform to zero mean and unit
+# variance, and modules.models.MERT.forward does that itself; with no processor the
+# collate passes raw audio through, which is what it wants. The features branch of
+# _encode_audio ignores the padding mask anyway.
+use_processor: false
+sample_rate: 24000
+
+# Music-understanding features instead of a compression codec.
+#
+# Encodec at 3 kbps is trained to rebuild a waveform cheaply, not to say what the music
+# is doing, and the model barely uses it: a different song's audio costs only +0.189
+# nats, unmoved by the pad-weight fix, guidance, input noise or stem mixing. MERT is
+# trained on music with musical targets.
+#
+# Substitution rather than rebuild: MERT-v1-95M runs at 24 kHz and strides by 320, so it
+# emits the same 75 frames a second Encodec does. Cross-attention length is unchanged
+# and no audio needs re-caching.
+#
+# Loaded as plain HuBERT, never with trust_remote_code -- see modules.models.MERT.
+encoder:
+  _target_: modules.models.MERT
+  checkpoint: m-a-p/MERT-v1-95M
+  sample_rate: ${model.sample_rate}
+  # null learns a softmax blend over all 13 hidden states. No single MERT layer is best
+  # for everything -- lower layers carry onsets, middle ones musical structure, the last
+  # is specialised to the pretraining objective -- so the default lets the decoder pick.
+  # An int pins one layer, for ablations.
+  layer: null
+
+#Transformer Decocer config
+transformer:
+  _target_: modules.training_transformer.TransformerDecoderAudioConditioned
+
+  # --- Model dimensions ---
+  d_model: 512                
+  d_ff: 2048                  
+  n_heads: 8                  
+  num_kv_heads: 4
+  n_layers: 8      
+  dropout: 0.0
+  audio_drop: 0.0    
+  compression: null
+  use_flash: true            
+  conditional: false           # If true, expects class embeddings
+
+  rope_base: 10000.0           # Base frequency (common: 10000)
+  # Give every token step the audio at its own timestamp, added through a gate that
+  # starts closed. Off by default: it adds parameters, and a checkpoint saved without it
+  # cannot load strictly into a model with it.
+  aligned_audio: false
+  # The full window in token steps, so the aligned path resamples onto a fixed grid
+  # rather than onto whatever length a given forward happens to receive -- training sees
+  # 1499 and cached generation sees 1.
+  grid_ms: ${data.grid_ms}
+  window_seconds: ${data.window_seconds}

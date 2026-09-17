@@ -8,6 +8,7 @@ __pycache__/
 .vscode/
 wandb/
 lightning_logs/
+outputs/
 checkpoints/
 *.ckpt
 raw_audio/
@@ -17,3 +18,4 @@ results/
 *.mp3
 *.ogg
 *.opus
+*.bak

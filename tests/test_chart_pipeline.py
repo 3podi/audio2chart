@@ -36,7 +36,7 @@ class TokenizerTests(unittest.TestCase):
         self.notes = processor.notes["ExpertSingle"]
 
     def test_default_ids_chords_modifiers_and_star_power(self):
-        tokenizer = SimpleTokenizerGuitar()
+        tokenizer = SimpleTokenizerGuitar(expressive=False)
         encoded = tokenizer.encode(self.notes)
         self.assertEqual(tokenizer.mapping_noteseqs2int[(0,)], 0)
         self.assertEqual(tokenizer.mapping_noteseqs2int[(7,)], 31)
@@ -47,9 +47,31 @@ class TokenizerTests(unittest.TestCase):
         self.assertTrue(encoded[2][3]["is6"])
 
     def test_open_chords_can_be_enabled(self):
-        tokenizer = SimpleTokenizerGuitar(exclude_open_chords=False)
+        tokenizer = SimpleTokenizerGuitar(exclude_open_chords=False, expressive=False)
         self.assertIn((0, 7), tokenizer.mapping_noteseqs2int)
         self.assertEqual(len(tokenizer.mapping_noteseqs2int), 63)
+
+    def test_expressive_vocabulary_layout(self):
+        tokenizer = SimpleTokenizerGuitar()
+        self.assertEqual(tokenizer.n_chords, 32)
+        self.assertEqual(tokenizer.vocab_size, 32 * 4 * 10 + 3)
+        # legacy token c must land on c*40 so pretrained embedding rows can be broadcast
+        for chord in range(tokenizer.n_chords):
+            self.assertEqual(tokenizer.legacy_to_expressive(chord), chord * 40)
+            self.assertEqual(tokenizer.split(chord * 40), (chord, 0, 0))
+        # the pretrained checkpoint depends on this id staying put
+        self.assertEqual(SimpleTokenizerGuitar(expressive=False).pad_id, 34)
+
+    def test_expressive_tokens_carry_flags_and_sustain(self):
+        tokenizer = SimpleTokenizerGuitar()
+        notes = [(0, "N", 0, 192), (0, "N", 6, 0), (192, "N", 1, 0)]
+        encoded = tokenizer.encode(notes, resolution=192)
+        chord, flag, sustain = tokenizer.split(encoded[0][1])
+        self.assertEqual(tokenizer.reverse_chord[chord], (0,))
+        self.assertEqual(flag, 2)                      # tap
+        self.assertEqual(tokenizer.sustain_beats(encoded[0][1]), 1.0)
+        self.assertEqual(tokenizer.sustain_ticks(encoded[0][1], 192), 192)
+        self.assertEqual(tokenizer.split(encoded[1][1])[2], 0)   # no sustain
 
     def test_decode_roundtrip_preserves_encoded_notes(self):
         tokenizer = SimpleTokenizerGuitar()

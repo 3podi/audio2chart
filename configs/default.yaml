@@ -1,3 +1,5 @@
+seed: 42
+
 data:
   root_folder: ../data
   split_folder: null
@@ -14,6 +16,8 @@ loader:
   train_num_pieces: 6
   val_num_pieces: 1
   max_sample_retries: 5
+  max_cache_gb: 20.0
+  chart_cache_size: 512
 
 optimizer:
   lr: 1e-3
@@ -29,7 +33,45 @@ trainer:
   log_every_n_steps: 10
   early_stopping_patience: 5
   gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
   num_sanity_val_steps: 0
+  # `simple` or `advanced` to find out where a step's time actually goes.
+  profiler: null
+  # Short probe runs: `trainer.max_steps=50 trainer.limit_val_batches=5`
+  max_steps: -1
+  limit_train_batches: null
+  limit_val_batches: null
+  # CAREFUL: these two neighbours look symmetrical and count different things.
+  # Lightning's val_check_interval counts BATCHES; ModelCheckpoint's every_n_train_steps
+  # counts OPTIMIZER STEPS. Setting both to 100 with accumulate_grad_batches=8 ran one
+  # validation batch for every training batch and wrote a 2.42 GB checkpoint every 100
+  # batches, which took a 2.79 it/s run down to 0.82 it/s with the GPU at 16%.
+  # To validate every N optimizer steps, set this to N * accumulate_grad_batches.
+  #
+  # AND IT MUST ALSO BE <= THE BATCHES IN ONE EPOCH, or Lightning refuses to start. Those
+  # two rules pull against each other on a small corpus: 500 optimizer steps at
+  # accumulate 8 is 4000 batches, which is legal on the 13,338-item broad corpus and
+  # rejected on the 1,447-item tapping one. Getting the unit conversion right is not
+  # enough; check the result against the epoch.
+  val_check_interval: null
+  # Optimizer steps between plain last.ckpt saves, independent of validation. 0 disables.
+  checkpoint_every_n_steps: 0
+  # Lightning checkpoint to resume from; null starts fresh.
+  resume_path: null
+  # Where checkpoints and CSV metrics go. Each one is 2.42 GB, so this needs a drive
+  # with room far more than it needs a fast one.
+  #
+  # An earlier version of this comment said to keep it off the corpus drive, because
+  # G: measures 108 MB/s against C:'s 704 MB/s and the dataloader reads audio from G:.
+  # That reasoning was mostly wrong. The profiler puts the whole dataloader at 0.1% of a
+  # step, so the contention it warned about is negligible, and what actually fixed
+  # throughput was writing checkpoints far less often -- not moving them.
+  #
+  # Pointing it at C: then filled a 464 GB system drive to 7 MB free across five runs and
+  # killed a training run mid-write. At the current frequency a run writes about eight
+  # checkpoints, so the slower drive costs roughly 2.6 minutes per 75-minute run, which
+  # is nothing against running out of space.
+  log_dir: G:/a2c_runs
 
 tracking:
   enabled: true
